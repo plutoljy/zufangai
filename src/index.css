@@ -1,0 +1,34 @@
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800;900&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #FFF4E0;
+  --color-surface: #FFFFFF;
+  --color-surface-alt: #F8F9FA;
+  --color-ink: #2D3142;
+  --color-accent: #FF6B6B;
+  --color-primary: #4ECDC4;
+  --color-secondary: #FFE66D;
+  --color-tertiary: #957FEF;
+  --color-gray-custom: #8C92AC;
+  --color-border-custom: #2D3142;
+  --color-calc-bg: #FFFFFF;
+  --font-sans: "Nunito", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  .dark {
+    --color-paper: #15171E;
+    --color-surface: #222634;
+    --color-surface-alt: #1A1C23;
+    --color-ink: #F8F9FA;
+    --color-accent: #FF6B6B;
+    --color-primary: #26A69A;
+    --color-secondary: #F4D03F;
+    --color-tertiary: #957FEF;
+    --color-gray-custom: #A4B0BE;
+    --color-border-custom: #F8F9FA;
+    --color-calc-bg: #2D3142;
+  }
+}
+
