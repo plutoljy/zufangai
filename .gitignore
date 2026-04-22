@@ -1,8 +1,64 @@
+# Dependencies
 node_modules/
+
+# Build outputs
 build/
 dist/
-coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
 *.log
+logs/
+
+# Environment
 .env*
 !.env.example
+
+# Test coverage
+coverage/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+test_*.py
+test_*.txt
+
+# Data directories
+data/uploads/
+data/vectorstore/
+data/sessions/
+
+# Temporary documentation
+*_REPORT.md
+*_GUIDE.md
+*_SUMMARY.md
+*_STATUS.md
+*_TASKS.md
+*_FINDINGS.md
+*_CHECKLIST.md
+*_DESIGN.md
+*_DIAGNOSIS.md
+*_IMPLEMENTATION.md

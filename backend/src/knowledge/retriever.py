@@ -11,16 +11,35 @@ from .vectorize import VectorStore
 class KnowledgeRetriever:
     """知识库检索器"""
 
-    def __init__(self, vectorstore_dir: str = "src/knowledge/vectorstore"):
+    def __init__(self, vectorstore_dir: str = None):
         """
         初始化检索器
 
         Args:
-            vectorstore_dir: 向量库目录路径
+            vectorstore_dir: 向量库目录路径（自动检测）
         """
         self.vector_store = VectorStore()
 
-        # 检查向量库是否存在
+        # 自动检测向量库路径
+        if vectorstore_dir is None:
+            # 尝试多个可能的路径
+            possible_paths = [
+                Path("knowledge/vectorstore"),  # 从 src 目录启动
+                Path("src/knowledge/vectorstore"),  # 从 backend 目录启动
+                Path(__file__).parent / "vectorstore",  # 相对于当前文件
+            ]
+
+            for path in possible_paths:
+                if (path / "index.faiss").exists():
+                    vectorstore_dir = str(path)
+                    break
+            else:
+                raise FileNotFoundError(
+                    "向量库不存在，尝试的路径:\n" +
+                    "\n".join(f"  - {p}" for p in possible_paths) +
+                    "\n请先运行: python -m knowledge.vectorize"
+                )
+
         vectorstore_path = Path(vectorstore_dir)
         if not (vectorstore_path / "index.faiss").exists():
             raise FileNotFoundError(
@@ -29,7 +48,7 @@ class KnowledgeRetriever:
             )
 
         # 加载向量库
-        self.vector_store.load(vectorstore_dir)
+        self.vector_store.load(str(vectorstore_path))
 
     def search_legal_docs(self, query: str, top_k: int = 3) -> List[Dict]:
         """

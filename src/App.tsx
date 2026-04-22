@@ -1,13 +1,38 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import type { CSSProperties, ChangeEvent, DragEvent, KeyboardEvent, ReactNode } from 'react';
 import { UploadCloud, FileText, FileImage, File, Lock, Mail, ArrowRight, Loader2, MessageCircle, History, Settings, LogOut, Send, Download, Plus, ZoomIn, ZoomOut, AlertTriangle, CheckCircle2, MapPin, Edit2, FileCheck, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import {
+  analyzeContract,
+  cleanupBurnAfterReading,
+  getReport,
+  uploadContract,
+} from './services/api';
+import type { AnalysisReport, AnalysisEvent } from './services/api';
+import { detectUploadFormat, getUploadAccept, getUploadHint, openNativeFileDialog, validateUploadSelection } from './uploadHelpers';
+import type { UploadFormat, UploadTargetFormat } from './uploadHelpers';
+import WorkspaceResultView from './components/WorkspaceResultView';
+import LiveAnalysisStage from './components/LiveAnalysisStage';
+import { UserPreferencesSettings } from './components/UserPreferencesSettings';
+import { shouldRenderGlobalModal } from './utils/globalModalVisibility';
+import {
+  getCurrentSession,
+  getRentalProfile,
+  loginWithPassword,
+  logout as logoutFromSupabase,
+  onAuthStateChange,
+  registerWithPassword,
+} from './services/authService';
+import { hasSupabaseConfig } from './services/supabase';
+import type { RentalProfile } from './services/authService';
+import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
 
 const AnimalIcon = ({ type, theme, className = "" }: { type: string, theme: string, className?: string }) => {
   const isDark = theme === 'dark';
   
   // 使用内联样式 (Inline Styles) 进行绝对定位，确保在 DOM 渲染的第一帧就处于正确位置。
   // 这样可以彻底解决 Tailwind 类名解析延迟导致的“先并列显示，再跳一帧结合”的闪烁问题。
-  const containerStyle: React.CSSProperties = {
+  const containerStyle: CSSProperties = {
     position: 'relative',
     display: 'inline-block',
     width: '1em',
@@ -15,7 +40,7 @@ const AnimalIcon = ({ type, theme, className = "" }: { type: string, theme: stri
     lineHeight: 1,
   };
 
-  const centerStyle: React.CSSProperties = {
+  const centerStyle: CSSProperties = {
     position: 'absolute',
     top: '50%',
     left: '50%',
@@ -81,9 +106,25 @@ const AnimalIcon = ({ type, theme, className = "" }: { type: string, theme: stri
 };
 
 // --- Login & Upload Views (Kept mostly the same, just adjusted wrapper for full screen) ---
-const LoginView = ({ onLogin, theme }: { onLogin: () => void, theme: string }) => {
+const LoginView = ({
+  onAuthenticate,
+  theme,
+}: {
+  onAuthenticate: (payload: {
+    mode: 'login' | 'register';
+    email: string;
+    password: string;
+    username?: string;
+  }) => Promise<void>;
+  theme: string;
+}) => {
   const [isLogin, setIsLogin] = useState(true);
   const [slideIndex, setSlideIndex] = useState(0);
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [authError, setAuthError] = useState('');
 
   const slides = [
     { type: 'owl', title: '猫头鹰解析师', desc: '逐字阅读合同，精准揪出隐藏的霸王条款。' },
@@ -98,6 +139,39 @@ const LoginView = ({ onLogin, theme }: { onLogin: () => void, theme: string }) =
     }, 3000);
     return () => clearInterval(timer);
   }, []);
+
+  const handleSubmit = async () => {
+    setAuthError('');
+
+    if (!email.trim() || !password.trim()) {
+      setAuthError('请先填写邮箱和密码。');
+      return;
+    }
+
+    if (!isLogin && username.trim().length < 3) {
+      setAuthError('用户名至少需要 3 个字符。');
+      return;
+    }
+
+    if (!hasSupabaseConfig()) {
+      setAuthError('还没有配置 Supabase，请先补充前端环境变量。');
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      await onAuthenticate({
+        mode: isLogin ? 'login' : 'register',
+        email: email.trim(),
+        password,
+        username: isLogin ? undefined : username.trim(),
+      });
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : '认证失败，请稍后重试。');
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <div className="flex-1 w-full p-4 sm:p-8 flex flex-col">
@@ -181,7 +255,13 @@ const LoginView = ({ onLogin, theme }: { onLogin: () => void, theme: string }) =
                     <label className="block text-sm font-black text-ink mb-2">昵称</label>
                     <div className="relative">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-custom text-lg">👤</span>
-                      <input type="text" placeholder="你的称呼" className="w-full border-4 border-ink rounded-xl p-3 pl-10 text-sm font-bold focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all bg-paper" />
+                      <input
+                        type="text"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder="你的称呼"
+                        className="w-full border-4 border-ink rounded-xl p-3 pl-10 text-sm font-bold focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all bg-paper"
+                      />
                     </div>
                   </div>
                 )}
@@ -189,22 +269,43 @@ const LoginView = ({ onLogin, theme }: { onLogin: () => void, theme: string }) =
                   <label className="block text-sm font-black text-ink mb-2">邮箱地址</label>
                   <div className="relative">
                     <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-custom" size={20} />
-                    <input type="email" placeholder="student@edu.cn" className="w-full border-4 border-ink rounded-xl p-3 pl-10 text-sm font-bold focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all bg-paper" />
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="student@edu.cn"
+                      className="w-full border-4 border-ink rounded-xl p-3 pl-10 text-sm font-bold focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all bg-paper"
+                    />
                   </div>
                 </div>
                 <div>
                   <label className="block text-sm font-black text-ink mb-2">密码</label>
                   <div className="relative">
                     <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-custom" size={20} />
-                    <input type="password" placeholder="••••••••" className="w-full border-4 border-ink rounded-xl p-3 pl-10 text-sm font-bold focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all bg-paper" />
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full border-4 border-ink rounded-xl p-3 pl-10 text-sm font-bold focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all bg-paper"
+                    />
                   </div>
                 </div>
+                {authError && (
+                  <div className="rounded-xl border-4 border-ink bg-accent/10 text-accent p-3 text-sm font-black">
+                    {authError}
+                  </div>
+                )}
               </motion.div>
             </AnimatePresence>
           </div>
 
-          <button onClick={onLogin} className="w-full bg-accent text-white border-4 border-ink rounded-xl p-4 text-base font-black flex items-center justify-center gap-2 shadow-[4px_4px_0px_var(--color-ink)] hover:-translate-y-1 hover:shadow-[6px_6px_0px_var(--color-ink)] active:translate-y-1 active:shadow-none transition-all relative z-10">
-            {isLogin ? '召唤小动物' : '加入护卫队'} <ArrowRight size={20} strokeWidth={3} />
+          <button
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="w-full bg-accent text-white border-4 border-ink rounded-xl p-4 text-base font-black flex items-center justify-center gap-2 shadow-[4px_4px_0px_var(--color-ink)] hover:-translate-y-1 hover:shadow-[6px_6px_0px_var(--color-ink)] active:translate-y-1 active:shadow-none transition-all relative z-10 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {submitting ? '处理中...' : isLogin ? '进入工作台' : '创建测试账号'} <ArrowRight size={20} strokeWidth={3} />
           </button>
         </div>
       </div>
@@ -212,7 +313,7 @@ const LoginView = ({ onLogin, theme }: { onLogin: () => void, theme: string }) =
   );
 };
 
-const FormatCard = ({ type, icon, label, selected, onClick }: { type: string, icon: React.ReactNode, label: string, selected: boolean, onClick: () => void }) => (
+const FormatCard = ({ type, icon, label, selected, onClick }: { type: string, icon: ReactNode, label: string, selected: boolean, onClick: () => void }) => (
   <div
     onClick={onClick}
     className={`p-6 border-4 rounded-2xl cursor-pointer flex flex-col items-center justify-center gap-4 transition-all ${selected ? 'border-ink bg-secondary shadow-[4px_4px_0px_var(--color-ink)] scale-105' : 'border-ink/20 bg-surface hover:border-ink/50'}`}
@@ -225,27 +326,46 @@ const FormatCard = ({ type, icon, label, selected, onClick }: { type: string, ic
 const UploadView = ({ onUpload, location, setLocation }: { onUpload: () => void, location: string | null, setLocation: (loc: string) => void }) => {
   const [selectedFormat, setSelectedFormat] = useState('pdf');
   const [isLocating, setIsLocating] = useState(false);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+
+  const cities = [
+    { province: '北京市', cities: ['东城区', '西城区', '朝阳区', '海淀区', '丰台区', '石景山区', '通州区', '昌平区', '大兴区', '顺义区'] },
+    { province: '上海市', cities: ['黄浦区', '徐汇区', '长宁区', '静安区', '普陀区', '虹口区', '杨浦区', '浦东新区', '闵行区', '宝山区'] },
+    { province: '广东省', cities: ['广州市', '深圳市', '珠海市', '佛山市', '东莞市', '中山市', '惠州市'] },
+    { province: '浙江省', cities: ['杭州市', '宁波市', '温州市', '嘉兴市', '湖州市', '绍兴市'] },
+    { province: '江苏省', cities: ['南京市', '苏州市', '无锡市', '常州市', '南通市', '扬州市'] },
+    { province: '四川省', cities: ['成都市', '绵阳市', '德阳市', '南充市', '宜宾市'] },
+  ];
 
   const handleLocation = () => {
     setIsLocating(true);
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          // Mock reverse geocoding for demo purposes
+          // 实际项目中应该调用反向地理编码 API 将经纬度转换为城市名
+          // 这里暂时使用模拟数据
           setTimeout(() => {
+            // 注意：这里应该根据 pos.coords.latitude 和 pos.coords.longitude
+            // 调用地理编码服务获取真实城市，目前仅作为示例
             setLocation('北京市 海淀区');
             setIsLocating(false);
           }, 1000);
         },
         (err) => {
-          alert('定位失败，请允许浏览器获取位置权限。');
+          console.error('定位失败:', err);
           setIsLocating(false);
+          setShowLocationPicker(true);
         }
       );
     } else {
-      alert('您的浏览器不支持定位功能。');
+      setShowLocationPicker(true);
       setIsLocating(false);
     }
+  };
+
+  const handleManualLocation = (province: string, city: string) => {
+    setLocation(`${province} ${city}`);
+    setShowLocationPicker(false);
   };
   
   return (
@@ -273,14 +393,64 @@ const UploadView = ({ onUpload, location, setLocation }: { onUpload: () => void,
         <span className="text-gray-custom text-sm font-bold">支持 .pdf, .docx, .png, .jpg (最大 50MB)</span>
       </div>
 
-      <button 
-        onClick={handleLocation}
-        disabled={isLocating || !!location}
-        className={`flex items-center gap-2 px-6 py-3 rounded-2xl border-4 border-ink font-black text-sm transition-all shadow-[4px_4px_0px_var(--color-ink)] ${location ? 'bg-primary text-ink' : 'bg-surface text-ink hover:-translate-y-1 hover:shadow-[6px_6px_0px_var(--color-ink)] active:translate-y-1 active:shadow-none'}`}
-      >
-        {isLocating ? <Loader2 size={18} className="animate-spin" /> : <MapPin size={18} strokeWidth={3} />}
-        {location ? `已定位：${location}` : '📍 开启定位 (推荐) - 获取当地专属租房政策'}
-      </button>
+      <div className="flex gap-4 items-center">
+        <button
+          onClick={handleLocation}
+          disabled={isLocating || !!location}
+          className={`flex items-center gap-2 px-6 py-3 rounded-2xl border-4 border-ink font-black text-sm transition-all shadow-[4px_4px_0px_var(--color-ink)] ${location ? 'bg-primary text-ink' : 'bg-surface text-ink hover:-translate-y-1 hover:shadow-[6px_6px_0px_var(--color-ink)] active:translate-y-1 active:shadow-none'}`}
+        >
+          {isLocating ? <Loader2 size={18} className="animate-spin" /> : <MapPin size={18} strokeWidth={3} />}
+          {location ? `已定位：${location}` : '📍 开启定位 (推荐)'}
+        </button>
+
+        <button
+          onClick={() => setShowLocationPicker(true)}
+          className="flex items-center gap-2 px-6 py-3 rounded-2xl border-4 border-ink font-black text-sm bg-surface text-ink hover:-translate-y-1 hover:shadow-[6px_6px_0px_var(--color-ink)] active:translate-y-1 active:shadow-none transition-all shadow-[4px_4px_0px_var(--color-ink)]"
+        >
+          手动选择位置
+        </button>
+
+        {location && (
+          <button
+            onClick={() => setLocation('')}
+            className="text-gray-custom hover:text-ink font-bold text-sm"
+          >
+            重新选择
+          </button>
+        )}
+      </div>
+
+      {showLocationPicker && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowLocationPicker(false)}>
+          <div className="bg-surface border-4 border-ink rounded-3xl p-8 max-w-2xl w-full mx-4 shadow-[8px_8px_0px_var(--color-ink)] max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-2xl font-black mb-6 text-ink">选择您的位置</h3>
+            <div className="space-y-4">
+              {cities.map((item) => (
+                <div key={item.province} className="border-2 border-ink rounded-2xl p-4">
+                  <h4 className="font-black text-lg mb-3 text-ink">{item.province}</h4>
+                  <div className="grid grid-cols-3 gap-2">
+                    {item.cities.map((city) => (
+                      <button
+                        key={city}
+                        onClick={() => handleManualLocation(item.province, city)}
+                        className="px-4 py-2 rounded-xl border-2 border-ink bg-white hover:bg-primary font-bold text-sm transition-colors"
+                      >
+                        {city}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => setShowLocationPicker(false)}
+              className="mt-6 w-full px-6 py-3 rounded-2xl border-4 border-ink font-black bg-gray-200 hover:bg-gray-300 transition-colors shadow-[4px_4px_0px_var(--color-ink)]"
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );
@@ -331,8 +501,528 @@ const AnalysisView = ({ onComplete, theme }: { onComplete: () => void, theme: st
   );
 };
 
+const FileUploadView = ({
+  onUploadComplete,
+  location,
+  setLocation,
+  privacyRedaction,
+  burnAfterReading,
+}: {
+  onUploadComplete: (contractId: string, file: File) => void;
+  location: string | null;
+  setLocation: (loc: string) => void;
+  privacyRedaction: boolean;
+  burnAfterReading: boolean;
+}) => {
+  const [selectedFormat, setSelectedFormat] = useState<UploadTargetFormat>('all');
+  const [isLocating, setIsLocating] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [cityData, setCityData] = useState<Array<{ name: string; children: Array<{ name: string }> }>>([]);
+  const [isLoadingCities, setIsLoadingCities] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 加载城市数据
+  useEffect(() => {
+    const loadCityData = async () => {
+      try {
+        setIsLoadingCities(true);
+        const response = await fetch('https://unpkg.com/province-city-china/dist/level.json');
+        const data = await response.json();
+        // 只保留省和市级数据，过滤掉区县
+        const simplified = data.map((province: any) => ({
+          name: province.name,
+          children: province.children?.map((city: any) => ({
+            name: city.name
+          })) || []
+        }));
+        setCityData(simplified);
+      } catch (error) {
+        console.error('加载城市数据失败:', error);
+        // 使用备用数据
+        setCityData([
+          { name: '北京市', children: [{ name: '东城区' }, { name: '西城区' }, { name: '朝阳区' }, { name: '海淀区' }] },
+          { name: '上海市', children: [{ name: '黄浦区' }, { name: '徐汇区' }, { name: '浦东新区' }] },
+          { name: '广东省', children: [{ name: '广州市' }, { name: '深圳市' }, { name: '珠海市' }] },
+        ]);
+      } finally {
+        setIsLoadingCities(false);
+      }
+    };
+    loadCityData();
+  }, []);
+
+  const handleLocation = () => {
+    setIsLocating(true);
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        () => {
+          setTimeout(() => {
+            setLocation('北京市 海淀区');
+            setIsLocating(false);
+          }, 1000);
+        },
+        () => {
+          setIsLocating(false);
+          setShowLocationPicker(true);
+        }
+      );
+    } else {
+      setIsLocating(false);
+      setShowLocationPicker(true);
+    }
+  };
+
+  const handleManualLocation = (province: string, city: string) => {
+    setLocation(`${province} ${city}`);
+    setShowLocationPicker(false);
+  };
+
+  const handleFormatSelect = (format: UploadFormat) => {
+    setSelectedFormat((current) => (current === format ? 'all' : format));
+    setUploadError(null);
+  };
+
+  const handleUploadRequest = () => {
+    if (isUploading) {
+      return;
+    }
+
+    setUploadError(null);
+    openNativeFileDialog(fileInputRef.current);
+  };
+
+  const handleFilesSelected = async (
+    fileList: FileList | File[] | null | undefined
+  ) => {
+    if (isUploading) {
+      return;
+    }
+
+    const files = fileList ? Array.from(fileList) : [];
+    const validation = validateUploadSelection(files, selectedFormat);
+    if (!validation.ok || files.length === 0) {
+      setUploadError(validation.error ?? '上传文件不符合要求，请重新选择。');
+      return;
+    }
+
+    const [file] = files;
+    const detectedFormat = detectUploadFormat(file);
+    if (detectedFormat) {
+      setSelectedFormat(detectedFormat);
+    }
+
+    setUploadError(null);
+    setIsUploading(true);
+
+    try {
+      const contractId = await uploadContract(file, location ?? undefined, {
+        privacyRedaction,
+        burnAfterReading,
+      });
+      onUploadComplete(contractId, file);
+    } catch (error) {
+      setUploadError(
+        error instanceof Error ? error.message : '上传失败，请稍后重试。'
+      );
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const handleFileInputChange = async (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    await handleFilesSelected(event.target.files);
+  };
+
+  const handleDrop = async (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    await handleFilesSelected(event.dataTransfer.files);
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (!isUploading) {
+      setIsDragging(true);
+    }
+  };
+
+  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+
+    setIsDragging(false);
+  };
+
+  const handleDropzoneKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return;
+    }
+
+    event.preventDefault();
+    handleUploadRequest();
+  };
+
+  return (
+    <div className="flex-1 w-full p-4 sm:p-8 flex flex-col">
+      <div className="m-auto w-full max-w-3xl flex flex-col items-center justify-center shrink-0 py-4">
+        <div className="text-center mb-10">
+          <h2 className="text-4xl font-black mb-4 text-ink">上传合同给小动物们</h2>
+          <p className="text-gray-custom text-base font-bold">
+            支持拖拽上传或点击选择文件，系统会自动校验格式并开始分析。
+          </p>
+        </div>
+
+        {privacyRedaction && (
+          <div className="w-full mb-6 rounded-2xl border-4 border-ink bg-secondary/30 px-4 py-3 text-sm font-black text-ink shadow-[4px_4px_0px_var(--color-ink)]">
+            隐私消除已开启：上传后的合同会先自动脱敏，再进入分析流程。
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 w-full mb-10">
+          <FormatCard
+            type="pdf"
+            icon={<FileText size={40} strokeWidth={2.5} />}
+            label="PDF 文档"
+            selected={selectedFormat === 'pdf'}
+            onClick={() => handleFormatSelect('pdf')}
+          />
+          <FormatCard
+            type="word"
+            icon={<File size={40} strokeWidth={2.5} />}
+            label="Word 文档"
+            selected={selectedFormat === 'word'}
+            onClick={() => handleFormatSelect('word')}
+          />
+          <FormatCard
+            type="image"
+            icon={<FileImage size={40} strokeWidth={2.5} />}
+            label="拍照/截图"
+            selected={selectedFormat === 'image'}
+            onClick={() => handleFormatSelect('image')}
+          />
+        </div>
+
+        <div
+          className={`w-full border-4 border-dashed border-ink rounded-3xl bg-surface p-16 flex flex-col items-center justify-center transition-colors group mb-4 ${
+            isUploading
+              ? 'cursor-wait opacity-80'
+              : 'cursor-pointer hover:bg-secondary/20'
+          } ${isDragging ? 'bg-secondary/20' : ''}`}
+          onClick={handleUploadRequest}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onKeyDown={handleDropzoneKeyDown}
+          role="button"
+          tabIndex={isUploading ? -1 : 0}
+          aria-disabled={isUploading}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={getUploadAccept(selectedFormat)}
+            className="hidden"
+            onChange={handleFileInputChange}
+            disabled={isUploading}
+          />
+          <div className="bg-secondary p-4 rounded-full border-4 border-ink shadow-[4px_4px_0px_var(--color-ink)] mb-6 group-hover:scale-110 transition-transform">
+            {isUploading ? (
+              <Loader2 size={40} className="text-ink animate-spin" strokeWidth={2.5} />
+            ) : (
+              <UploadCloud size={40} className="text-ink" strokeWidth={2.5} />
+            )}
+          </div>
+          <span className="font-black text-xl mb-2 text-ink">
+            {isUploading
+              ? '正在上传文件并准备分析...'
+              : '把文件拖到这里，或点击选择文件'}
+          </span>
+          <span className="text-gray-custom text-sm font-bold">
+            {getUploadHint(selectedFormat)}
+          </span>
+          <span className="text-gray-custom/80 text-xs font-bold mt-3">
+            一次仅支持 1 个文件，点击上方卡片可临时限制上传格式
+          </span>
+        </div>
+
+        {uploadError && (
+          <div className="w-full mb-6 bg-accent/10 border-2 border-accent rounded-2xl px-4 py-3 flex items-start gap-3 text-accent">
+            <AlertTriangle size={18} strokeWidth={2.5} className="mt-0.5 shrink-0" />
+            <span className="text-sm font-black">{uploadError}</span>
+          </div>
+        )}
+
+        <div className="flex gap-4 items-center">
+          <button
+            onClick={handleLocation}
+            disabled={isLocating || !!location}
+            className={`flex items-center gap-2 px-6 py-3 rounded-2xl border-4 border-ink font-black text-sm transition-all shadow-[4px_4px_0px_var(--color-ink)] ${
+              location
+                ? 'bg-primary text-ink'
+                : 'bg-surface text-ink hover:-translate-y-1 hover:shadow-[6px_6px_0px_var(--color-ink)] active:translate-y-1 active:shadow-none'
+            }`}
+          >
+            {isLocating ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : (
+              <MapPin size={18} strokeWidth={3} />
+            )}
+            {location ? `已定位：${location}` : '开启定位（推荐） - 获取当地租房政策'}
+          </button>
+
+          <button
+            onClick={() => setShowLocationPicker(true)}
+            className="flex items-center gap-2 px-6 py-3 rounded-2xl border-4 border-ink font-black text-sm bg-surface text-ink hover:-translate-y-1 hover:shadow-[6px_6px_0px_var(--color-ink)] active:translate-y-1 active:shadow-none transition-all shadow-[4px_4px_0px_var(--color-ink)]"
+          >
+            手动选择位置
+          </button>
+
+          {location && (
+            <button
+              onClick={() => setLocation('')}
+              className="text-gray-custom hover:text-ink font-bold text-sm"
+            >
+              重新选择
+            </button>
+          )}
+        </div>
+
+        {showLocationPicker && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowLocationPicker(false)}>
+            <div className="bg-surface border-4 border-ink rounded-3xl p-8 max-w-4xl w-full mx-4 shadow-[8px_8px_0px_var(--color-ink)] max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+              <h3 className="text-2xl font-black mb-6 text-ink">选择您的位置</h3>
+              {isLoadingCities ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 size={40} className="animate-spin text-ink" />
+                  <span className="ml-4 font-bold text-ink">正在加载城市数据...</span>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {cityData.map((province) => (
+                    <div key={province.name} className="border-2 border-ink rounded-2xl p-4">
+                      <h4 className="font-black text-lg mb-3 text-ink">{province.name}</h4>
+                      <div className="grid grid-cols-4 gap-2">
+                        {province.children.map((city) => (
+                          <button
+                            key={city.name}
+                            onClick={() => handleManualLocation(province.name, city.name)}
+                            className="px-3 py-2 rounded-xl border-2 border-ink bg-white hover:bg-primary font-bold text-sm transition-colors truncate"
+                            title={city.name}
+                          >
+                            {city.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => setShowLocationPicker(false)}
+                className="mt-6 w-full px-6 py-3 rounded-2xl border-4 border-ink font-black bg-gray-200 hover:bg-gray-300 transition-colors shadow-[4px_4px_0px_var(--color-ink)]"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const LiveAnalysisView = ({
+  contractId,
+  fileName,
+  onComplete,
+  onRetry,
+  theme,
+}: {
+  contractId: string | null;
+  fileName: string | null;
+  onComplete: (report: AnalysisReport) => void;
+  onRetry: () => void;
+  theme: string;
+}) => {
+  const [progress, setProgress] = useState(5);
+  const [currentAgentType, setCurrentAgentType] = useState<'owl' | 'dog' | 'beaver' | 'cat'>('owl');
+  const [actionText, setActionText] = useState('正在准备分析任务...');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!contractId) {
+      setErrorMessage('缺少合同信息，请重新上传文件。');
+      return;
+    }
+
+    let isCancelled = false;
+    let completionTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const applyStage = (eventType: AnalysisEvent['type']) => {
+      if (eventType === 'analysis_started') {
+        setProgress(12);
+        setCurrentAgentType('owl');
+        setActionText('正在准备分析任务...');
+      } else if (eventType === 'owl_analysis') {
+        setProgress(38);
+        setCurrentAgentType('owl');
+        setActionText('猫头鹰正在逐条解析合同条款...');
+      } else if (eventType === 'dog_retrieval') {
+        setProgress(62);
+        setCurrentAgentType('dog');
+        setActionText('猎犬正在检索相关法条和案例...');
+      } else if (eventType === 'beaver_calculation') {
+        setProgress(84);
+        setCurrentAgentType('beaver');
+        setActionText('海狸正在核算押金和费用...');
+      } else if (eventType === 'cat_report') {
+        setProgress(95);
+        setCurrentAgentType('cat');
+        setActionText('橘猫正在整理最终风险报告...');
+      } else if (eventType === 'analysis_complete') {
+        setProgress(100);
+        setCurrentAgentType('cat');
+        setActionText('分析完成，正在打开结果...');
+      }
+    };
+
+    const eventSource = analyzeContract(
+      contractId,
+      async (event) => {
+        if (isCancelled) {
+          return;
+        }
+
+        if (event.type === 'error') {
+          setErrorMessage(event.message ?? '合同分析失败，请稍后重试。');
+          eventSource.close();
+          return;
+        }
+
+        applyStage(event.type);
+
+        if (event.type === 'analysis_complete') {
+          try {
+            const report = await getReport(contractId);
+            if (isCancelled) {
+              return;
+            }
+
+            // 添加调试日志
+            console.log('[前端] 获取到分析报告:', {
+              contractId,
+              riskItemsCount: report.risk_items?.length ?? 0,
+              highRiskCount: report.risk_items?.filter(item => item.risk_level === 'high').length ?? 0,
+              mediumRiskCount: report.risk_items?.filter(item => item.risk_level === 'medium').length ?? 0,
+              lowRiskCount: report.risk_items?.filter(item => item.risk_level === 'low').length ?? 0,
+              entities: report.entities,
+            });
+
+            completionTimer = setTimeout(() => {
+              onComplete(report);
+            }, 400);
+          } catch (error) {
+            setErrorMessage(
+              error instanceof Error ? error.message : '获取分析报告失败，请稍后重试。'
+            );
+          } finally {
+            eventSource.close();
+          }
+        }
+      },
+      (error) => {
+        if (isCancelled) {
+          return;
+        }
+
+        setErrorMessage(error.message || '合同分析失败，请稍后重试。');
+      }
+    );
+
+    return () => {
+      isCancelled = true;
+      if (completionTimer) {
+        clearTimeout(completionTimer);
+      }
+      eventSource.close();
+    };
+  }, [contractId, onComplete]);
+
+  const agentNames: Record<string, string> = {
+    owl: '猫头鹰分析师',
+    dog: '猎犬检索师',
+    beaver: '海狸计算师',
+    cat: '橘猫报告师',
+  };
+
+  if (errorMessage) {
+    return (
+      <div className="flex-1 w-full p-4 sm:p-8 flex flex-col">
+        <div className="m-auto w-full max-w-md flex flex-col items-center justify-center shrink-0 py-4 text-center">
+          <div className="mb-6">
+            <AlertTriangle size={56} className="text-accent" strokeWidth={2.5} />
+          </div>
+          <h2 className="text-2xl font-black mb-3 text-ink">分析中断了</h2>
+          <p className="text-sm font-bold text-gray-custom mb-6">{errorMessage}</p>
+          <button
+            onClick={onRetry}
+            className="px-6 py-3 rounded-2xl border-4 border-ink bg-primary font-black text-ink shadow-[4px_4px_0px_var(--color-ink)] hover:-translate-y-1 active:translate-y-0 active:shadow-none transition-all"
+          >
+            返回重新上传
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 w-full p-4 sm:p-8 flex flex-col">
+      <div className="m-auto w-full max-w-md flex flex-col items-center justify-center shrink-0 py-4">
+        <div className="text-6xl mb-6 animate-bounce">
+          <AnimalIcon type={currentAgentType} theme={theme} />
+        </div>
+        <h2 className="text-2xl font-black mb-2 text-ink">{agentNames[currentAgentType]}</h2>
+        <p className="text-sm font-bold text-accent mb-2">{actionText}</p>
+        {fileName && (
+          <p className="text-xs font-bold text-gray-custom mb-6">当前文件：{fileName}</p>
+        )}
+
+        <div className="w-full h-6 bg-surface border-4 border-ink rounded-full overflow-hidden shadow-[4px_4px_0px_var(--color-ink)]">
+          <div
+            className="h-full bg-primary transition-all duration-300 relative"
+            style={{ width: `${progress}%` }}
+          >
+            <div
+              className="absolute inset-0 bg-surface/20 w-full"
+              style={{
+                backgroundImage:
+                  'linear-gradient(45deg, rgba(255,255,255,0.2) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.2) 50%, rgba(255,255,255,0.2) 75%, transparent 75%, transparent)',
+                backgroundSize: '1rem 1rem',
+              }}
+            ></div>
+          </div>
+        </div>
+        <div className="w-full flex justify-between mt-4 text-sm font-black text-ink">
+          <span>进度 {progress}%</span>
+          <span>真实分析进行中</span>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- New Workspace View (3-Pane Layout) ---
-const WorkspaceView = ({ onLogout, location, onNewChat, settings, setSettings }: { onLogout: () => void, location: string | null, onNewChat: () => void, settings: any, setSettings: any }) => {
+const WorkspaceView = ({ onLogout, location, onNewChat, settings, setSettings, uploadedFileName, analysisReport }: { onLogout: () => void, location: string | null, onNewChat: () => void, settings: any, setSettings: any, uploadedFileName: string | null, analysisReport: AnalysisReport | null }) => {
   const [activeNav, setActiveNav] = useState<'chat' | 'history' | 'preferences' | 'settings'>('chat');
   const [activeAgent, setActiveAgent] = useState<'owl' | 'dog' | 'beaver'>('owl');
   const [chatInput, setChatInput] = useState('');
@@ -342,8 +1032,38 @@ const WorkspaceView = ({ onLogout, location, onNewChat, settings, setSettings }:
   const [zoomLevel, setZoomLevel] = useState(100);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
 
+  useEffect(() => {
+    if (uploadedFileName) {
+      setDocTitle(uploadedFileName);
+    }
+  }, [uploadedFileName]);
+
   const handleZoomIn = () => setZoomLevel(prev => Math.min(prev + 25, 200));
   const handleZoomOut = () => setZoomLevel(prev => Math.max(prev - 25, 50));
+
+  // 修复：移除默认值，如果没有分析报告则显示 0
+  const highRiskCount = analysisReport?.risk_items.filter((item) => item.risk_level === 'high').length ?? 0;
+  const mediumRiskCount = analysisReport?.risk_items.filter((item) => item.risk_level === 'medium').length ?? 0;
+  const lowRiskCount = analysisReport?.risk_items.filter((item) => item.risk_level === 'low').length ?? 0;
+  const totalRiskCount = highRiskCount + mediumRiskCount + lowRiskCount;
+
+  // 添加调试日志
+  useEffect(() => {
+    console.log('[WorkspaceView] 分析报告更新:', {
+      hasReport: !!analysisReport,
+      riskItemsCount: analysisReport?.risk_items?.length ?? 0,
+      highRiskCount,
+      mediumRiskCount,
+      lowRiskCount,
+      totalRiskCount,
+      lessor: analysisReport?.entities?.lessor,
+      lessee: analysisReport?.entities?.lessee,
+      monthlyRent: analysisReport?.entities?.monthly_rent,
+      deposit: analysisReport?.entities?.deposit,
+    });
+  }, [analysisReport, highRiskCount, mediumRiskCount, lowRiskCount, totalRiskCount]);
+
+  const workspaceStatusText = analysisReport ? '已加载真实分析结果' : '已加载 智审内核已就绪';
 
   const agents: Record<string, any> = {
     owl: { name: '猫头鹰解析师', role: '条款拆解与霸王条款识别', color: 'bg-accent' },
@@ -792,11 +1512,11 @@ const WorkspaceView = ({ onLogout, location, onNewChat, settings, setSettings }:
         <div className="h-10 border-t-4 border-ink bg-paper flex items-center justify-between px-6 shrink-0 text-xs font-black text-gray-custom z-10">
           <div className="flex gap-4">
             <span>字数: 1,004</span>
-            <span className="text-accent flex items-center gap-1"><AlertTriangle size={12} strokeWidth={3} /> 2 处高危</span>
-            <span className="text-primary flex items-center gap-1"><AlertTriangle size={12} strokeWidth={3} /> 1 处提示</span>
+            <span className="text-accent flex items-center gap-1"><AlertTriangle size={12} strokeWidth={3} /> {highRiskCount} 处高危</span>
+            <span className="text-primary flex items-center gap-1"><AlertTriangle size={12} strokeWidth={3} /> {mediumRiskCount} 处提示</span>
           </div>
           <div className="flex items-center gap-2 text-primary">
-            <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div> 已加载 智审内核已就绪
+            <div className="w-2 h-2 bg-primary rounded-full animate-pulse"></div> {workspaceStatusText}
           </div>
         </div>
 
@@ -848,26 +1568,175 @@ const WorkspaceView = ({ onLogout, location, onNewChat, settings, setSettings }:
 
 export default function App() {
   const [view, setView] = useState<'login' | 'upload' | 'analyzing' | 'workspace'>('login');
+  const [contractId, setContractId] = useState<string | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [analysisReport, setAnalysisReport] = useState<AnalysisReport | null>(null);
   const [location, setLocation] = useState<string | null>(null);
   const [showPreferencesModal, setShowPreferencesModal] = useState(false);
+  const [showSystemSettingsModal, setShowSystemSettingsModal] = useState(false);
+  const [authSession, setAuthSession] = useState<Session | null>(null);
+  const [authUser, setAuthUser] = useState<SupabaseUser | null>(null);
+  const [authProfile, setAuthProfile] = useState<RentalProfile | null>(null);
   const [settings, setSettings] = useState({
     identity: '在校大学生',
     budget: '',
     dealbreakers: '',
     notifications: true,
     burnAfterReading: true,
+    privacyRedaction: false,
     theme: 'light',
     fontSize: 'standard'
   });
 
+  useEffect(() => {
+    let active = true;
+
+    const syncAuthState = async (session: Session | null) => {
+      if (!active) return;
+
+      setAuthSession(session);
+      setAuthUser(session?.user ?? null);
+
+      if (!session?.user) {
+        setAuthProfile(null);
+        setView('login');
+        return;
+      }
+
+      try {
+        const profile = await getRentalProfile(session.user.id);
+        if (active) {
+          setAuthProfile(profile);
+        }
+      } catch (error) {
+        console.error('Failed to load rental profile:', error);
+      }
+
+      setView((prev) => (prev === 'login' ? 'upload' : prev));
+    };
+
+    getCurrentSession()
+      .then(syncAuthState)
+      .catch((error) => {
+        console.error('Failed to restore session:', error);
+      });
+
+    const {
+      data: { subscription },
+    } = onAuthStateChange((_event, session) => {
+      void syncAuthState(session);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (view === 'login' || view === 'upload') {
+      setShowPreferencesModal(false);
+      setShowSystemSettingsModal(false);
+    }
+  }, [view]);
+
+  // 强制清理：确保登录页面没有遮罩层
+  useEffect(() => {
+    if (view === 'login') {
+      console.log('[Debug] Entering login view, clearing modals...');
+      console.log('[Debug] showPreferencesModal:', showPreferencesModal);
+      console.log('[Debug] showSystemSettingsModal:', showSystemSettingsModal);
+
+      // 立即清理
+      setShowPreferencesModal(false);
+      setShowSystemSettingsModal(false);
+
+      // 延迟清理，确保 AnimatePresence 的退出动画完成
+      const timer = setTimeout(() => {
+        setShowPreferencesModal(false);
+        setShowSystemSettingsModal(false);
+        console.log('[Debug] Modals cleared after delay');
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [view, showPreferencesModal, showSystemSettingsModal]);
+
+  const handleAuthenticate = async ({
+    mode,
+    email,
+    password,
+    username,
+  }: {
+    mode: 'login' | 'register';
+    email: string;
+    password: string;
+    username?: string;
+  }) => {
+    const result =
+      mode === 'login'
+        ? await loginWithPassword({ email, password })
+        : await registerWithPassword({
+            email,
+            password,
+            username: username ?? '',
+          });
+
+    setAuthSession(result.session);
+    setAuthUser(result.user);
+    setAuthProfile(result.profile);
+    setView('upload');
+  };
+
+  const handleReturnToUpload = () => {
+    setContractId(null);
+    setUploadedFile(null);
+    setAnalysisReport(null);
+    setView('upload');
+  };
+
+  const handleUploadComplete = (nextContractId: string, file: File) => {
+    setContractId(nextContractId);
+    setUploadedFile(file);
+    setAnalysisReport(null);
+    setView('analyzing');
+  };
+
+  const handleAnalysisComplete = (report: AnalysisReport) => {
+    setAnalysisReport(report);
+    setView('workspace');
+  };
+
+  const handleLogout = async () => {
+    try {
+      await cleanupBurnAfterReading();
+    } catch (error) {
+      console.error('Failed to cleanup burn-after-reading contracts:', error);
+    }
+
+    try {
+      await logoutFromSupabase();
+    } catch (error) {
+      console.error('Failed to sign out:', error);
+    }
+    setContractId(null);
+    setUploadedFile(null);
+    setAnalysisReport(null);
+    setAuthSession(null);
+    setAuthUser(null);
+    setAuthProfile(null);
+    setShowPreferencesModal(false);
+    setShowSystemSettingsModal(false);
+    setView('login');
+  };
+
   return (
-    <div className={`flex flex-col bg-paper text-ink font-sans selection:bg-secondary selection:text-[#2D3142] ${settings.theme === 'dark' ? 'dark' : ''} ${view === 'workspace' ? 'h-screen overflow-hidden' : 'min-h-screen overflow-y-auto'}`}>
+    <div className={`flex flex-col bg-paper text-ink font-sans selection:bg-secondary selection:text-[#2D3142] ${settings.theme === 'dark' ? 'dark' : ''} ${view === 'workspace' ? 'h-screen overflow-hidden' : 'min-h-screen overflow-y-auto'} ${view === 'login' ? 'debug-no-backdrop' : ''}`}>
       {/* Global Header (Only show outside of workspace) */}
       {view !== 'workspace' && (
         <header className="flex flex-col sm:flex-row justify-between items-center border-b-4 border-ink pb-4 mb-8 shrink-0 gap-4 bg-surface p-4 mx-4 sm:mx-8 mt-4 sm:mt-8 rounded-2xl shadow-[4px_4px_0px_var(--color-ink)]">
           <div 
             className="text-2xl font-black flex items-center gap-2 text-ink cursor-pointer hover:scale-105 transition-transform"
-            onClick={() => setView(view === 'login' ? 'login' : 'upload')}
+            onClick={() => (view === 'login' ? setView('login') : handleReturnToUpload())}
           >
             <div className="bg-secondary p-2 rounded-xl border-2 border-ink transform -rotate-6">🏠</div>
             租房避坑局
@@ -875,7 +1744,7 @@ export default function App() {
           <div className="flex items-center gap-4">
             {view !== 'login' && view !== 'upload' && (
               <button 
-                onClick={() => setView('upload')}
+                onClick={handleReturnToUpload}
                 className="hidden sm:flex items-center gap-2 px-4 py-2 bg-surface border-2 border-ink rounded-xl font-black text-sm shadow-[2px_2px_0px_var(--color-ink)] hover:-translate-y-0.5 hover:shadow-[4px_4px_0px_var(--color-ink)] active:translate-y-0.5 active:shadow-none transition-all"
               >
                 🏠 返回首页
@@ -887,6 +1756,12 @@ export default function App() {
             </div>
             {view !== 'login' && (
               <>
+                <button
+                  onClick={() => setShowSystemSettingsModal(true)}
+                  className="flex items-center gap-2 bg-surface border-2 border-ink px-3 py-2 rounded-xl text-sm font-black shadow-[2px_2px_0px_var(--color-ink)] hover:-translate-y-0.5 hover:bg-surface-alt transition-all shrink-0"
+                >
+                  <Settings size={16} strokeWidth={3} /> 系统设置
+                </button>
                 <button 
                   onClick={() => setShowPreferencesModal(true)}
                   className="flex items-center gap-2 bg-surface border-2 border-ink px-3 py-2 rounded-xl text-sm font-black shadow-[2px_2px_0px_var(--color-ink)] hover:-translate-y-0.5 hover:bg-surface-alt transition-all shrink-0"
@@ -894,7 +1769,7 @@ export default function App() {
                   <User size={16} strokeWidth={3} /> 个人偏好
                 </button>
                 <button 
-                  onClick={() => setView('login')}
+                  onClick={handleLogout}
                   className="flex items-center gap-2 bg-surface border-2 border-ink px-3 py-2 rounded-xl text-sm font-black shadow-[2px_2px_0px_var(--color-ink)] hover:-translate-y-0.5 hover:bg-surface-alt transition-all shrink-0"
                 >
                   <LogOut size={16} strokeWidth={3} /> 退出
@@ -906,10 +1781,39 @@ export default function App() {
       )}
 
       {/* Main Content Area */}
-      {view === 'login' && <LoginView onLogin={() => setView('upload')} theme={settings.theme} />}
-      {view === 'upload' && <UploadView onUpload={() => setView('analyzing')} location={location} setLocation={setLocation} />}
-      {view === 'analyzing' && <AnalysisView onComplete={() => setView('workspace')} theme={settings.theme} />}
-      {view === 'workspace' && <WorkspaceView onLogout={() => setView('login')} location={location} onNewChat={() => setView('upload')} settings={settings} setSettings={setSettings} />}
+      {view === 'login' && (
+        <LoginView onAuthenticate={handleAuthenticate} theme={settings.theme} />
+      )}
+      {view === 'upload' && (
+        <FileUploadView
+          onUploadComplete={handleUploadComplete}
+          location={location}
+          setLocation={setLocation}
+          privacyRedaction={settings.privacyRedaction}
+          burnAfterReading={settings.burnAfterReading}
+        />
+      )}
+      {view === 'analyzing' && (
+        <LiveAnalysisStage
+          contractId={contractId}
+          fileName={uploadedFile?.name ?? null}
+          onComplete={handleAnalysisComplete}
+          onRetry={handleReturnToUpload}
+          theme={settings.theme}
+        />
+      )}
+      {view === 'workspace' && (
+        <WorkspaceResultView
+          contractId={contractId}
+          onLogout={handleLogout}
+          location={location}
+          onNewChat={handleReturnToUpload}
+          settings={settings}
+          setSettings={setSettings}
+          uploadedFileName={uploadedFile?.name ?? null}
+          analysisReport={analysisReport}
+        />
+      )}
 
       {/* Global Footer (Only show outside of workspace) */}
       {view !== 'workspace' && (
@@ -925,9 +1829,144 @@ export default function App() {
         </footer>
       )}
 
+      {/* Global System Settings Modal */}
+      <AnimatePresence>
+        {shouldRenderGlobalModal(view, showSystemSettingsModal) && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 backdrop-blur-sm p-4 overflow-y-auto"
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="bg-surface border-4 border-ink rounded-3xl p-6 sm:p-8 max-w-lg w-full shadow-[8px_8px_0px_var(--color-ink)] my-8"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-black text-ink flex items-center gap-2">
+                  <Settings size={24} className="text-primary" /> 系统设置
+                </h3>
+                <button onClick={() => setShowSystemSettingsModal(false)} className="text-gray-custom hover:text-ink font-black text-xl">&times;</button>
+              </div>
+
+              <div className="space-y-6">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-black text-ink">隐私消除</div>
+                    <div className="text-xs font-bold text-gray-custom mt-1">
+                      上传后的合同会先自动脱敏，再进入分析流程。
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={settings.privacyRedaction}
+                      onChange={(e) => setSettings({ ...settings, privacyRedaction: e.target.checked })}
+                    />
+                    <div className="w-11 h-6 bg-ink/20 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-surface after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-surface after:border-ink/20 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary border-2 border-ink"></div>
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-black text-ink">桌面通知</div>
+                    <div className="text-xs font-bold text-gray-custom mt-1">
+                      分析完成后第一时间提醒你。
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={settings.notifications}
+                      onChange={(e) => setSettings({ ...settings, notifications: e.target.checked })}
+                    />
+                    <div className="w-11 h-6 bg-ink/20 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-surface after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-surface after:border-ink/20 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary border-2 border-ink"></div>
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-black text-ink">阅后即焚</div>
+                    <div className="text-xs font-bold text-gray-custom mt-1">
+                      退出登录后自动清除当前合同记录。
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={settings.burnAfterReading}
+                      onChange={(e) => setSettings({ ...settings, burnAfterReading: e.target.checked })}
+                    />
+                    <div className="w-11 h-6 bg-ink/20 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-surface after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-surface after:border-ink/20 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary border-2 border-ink"></div>
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-black text-ink">界面主题</div>
+                    <div className="text-xs font-bold text-gray-custom mt-1">
+                      选择你喜欢的界面风格。
+                    </div>
+                  </div>
+                  <select
+                    value={settings.theme}
+                    onChange={(e) => setSettings({ ...settings, theme: e.target.value })}
+                    className="border-4 border-ink rounded-xl p-3 font-bold bg-paper focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all"
+                  >
+                    <option value="light">浅色模式</option>
+                    <option value="dark">深色模式</option>
+                  </select>
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-black text-ink">字体大小</div>
+                    <div className="text-xs font-bold text-gray-custom mt-1">
+                      调整合同阅读区文字大小。
+                    </div>
+                  </div>
+                  <select
+                    value={settings.fontSize}
+                    onChange={(e) => setSettings({ ...settings, fontSize: e.target.value })}
+                    className="border-4 border-ink rounded-xl p-3 font-bold bg-paper focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all"
+                  >
+                    <option value="standard">标准</option>
+                    <option value="large">偏大</option>
+                    <option value="xlarge">特大</option>
+                  </select>
+                </div>
+
+                <div className="flex gap-4 mt-6">
+                  <button
+                    onClick={() => setShowSystemSettingsModal(false)}
+                    className="flex-1 py-3 rounded-xl border-4 border-ink font-black text-ink hover:bg-surface-alt transition-colors"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowSystemSettingsModal(false);
+                      alert('系统设置已保存。');
+                    }}
+                    className="flex-1 py-3 rounded-xl border-4 border-ink bg-primary font-black text-ink shadow-[4px_4px_0px_var(--color-ink)] hover:-translate-y-1 active:translate-y-0 active:shadow-none transition-all flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle2 size={18} strokeWidth={3} /> 保存设置
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Global Preferences Modal */}
       <AnimatePresence>
-        {showPreferencesModal && (
+        {shouldRenderGlobalModal(view, showPreferencesModal) && (
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -938,72 +1977,31 @@ export default function App() {
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
-              className="bg-surface border-4 border-ink rounded-3xl p-6 sm:p-8 max-w-lg w-full shadow-[8px_8px_0px_var(--color-ink)] my-8"
+              className="bg-surface border-4 border-ink rounded-3xl p-6 sm:p-8 max-w-3xl w-full shadow-[8px_8px_0px_var(--color-ink)] my-8"
             >
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-xl font-black text-ink flex items-center gap-2">
-                  <User size={24} className="text-primary" /> 🐾 告诉小动物们你的情况
+                  <User size={24} className="text-primary" /> 🐾 个人偏好
                 </h3>
                 <button onClick={() => setShowPreferencesModal(false)} className="text-gray-custom hover:text-ink font-black text-xl">&times;</button>
               </div>
-              <p className="text-sm font-bold text-gray-custom mb-6">
-                悄悄告诉我们你的租房底线，猫头鹰和海狸在看合同时会帮你盯紧这些坑哦！
-              </p>
-              
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-black text-ink mb-2">我的身份标签</label>
-                  <select 
-                    value={settings.identity}
-                    onChange={(e) => setSettings({...settings, identity: e.target.value})}
-                    className="w-full border-4 border-ink rounded-xl p-3 font-bold bg-paper focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all"
-                  >
-                    <option>在校大学生</option>
-                    <option>应届毕业生</option>
-                    <option>考研党</option>
-                    <option>实习生</option>
-                  </select>
+              {authUser ? (
+                <UserPreferencesSettings
+                  userId={authUser.id}
+                  onSave={() => {
+                    setShowPreferencesModal(false);
+                    alert('偏好设置已保存。');
+                  }}
+                  onClose={() => setShowPreferencesModal(false)}
+                />
+              ) : (
+                <div className="rounded-2xl border-4 border-ink bg-paper p-6 text-center">
+                  <p className="text-sm font-black text-ink mb-2">请先登录后再设置个人偏好。</p>
+                  <p className="text-xs font-bold text-gray-custom">
+                    登录成功后，偏好会直接写入 Supabase 的 user_preferences 表。
+                  </p>
                 </div>
-                
-                <div>
-                  <label className="block text-sm font-black text-ink mb-2">心理预期 (预算、付款方式等)</label>
-                  <input 
-                    type="text"
-                    value={settings.budget}
-                    onChange={(e) => setSettings({...settings, budget: e.target.value})}
-                    placeholder="例如：预算2000内，希望押一付一..."
-                    className="w-full border-4 border-ink rounded-xl p-3 font-bold bg-paper focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-black text-ink mb-2">核心注意事项 (绝对不能接受的坑)</label>
-                  <textarea 
-                    value={settings.dealbreakers}
-                    onChange={(e) => setSettings({...settings, dealbreakers: e.target.value})}
-                    placeholder="例如：不能接受二房东、必须能办居住证、不能有隐藏的物业费..."
-                    className="w-full border-4 border-ink rounded-xl p-3 font-bold bg-paper focus:outline-none focus:ring-4 focus:ring-secondary/50 transition-all h-24 resize-none"
-                  />
-                </div>
-
-                <div className="flex gap-4 mt-6">
-                  <button 
-                    onClick={() => setShowPreferencesModal(false)}
-                    className="flex-1 py-3 rounded-xl border-4 border-ink font-black text-ink hover:bg-surface-alt transition-colors"
-                  >
-                    取消
-                  </button>
-                  <button 
-                    onClick={() => {
-                      setShowPreferencesModal(false);
-                      alert('设置已保存！AI 将在下次审查时参考这些偏好。');
-                    }}
-                    className="flex-1 py-3 rounded-xl border-4 border-ink bg-primary font-black text-ink shadow-[4px_4px_0px_var(--color-ink)] hover:-translate-y-1 active:translate-y-0 active:shadow-none transition-all flex items-center justify-center gap-2"
-                  >
-                    <CheckCircle2 size={18} strokeWidth={3} /> 保存偏好
-                  </button>
-                </div>
-              </div>
+              )}
             </motion.div>
           </motion.div>
         )}

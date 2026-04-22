@@ -32,3 +32,20 @@
   }
 }
 
+/* 临时调试：强制隐藏所有可能的遮罩层 */
+@layer utilities {
+  .debug-no-backdrop {
+    position: relative !important;
+  }
+  .debug-no-backdrop .fixed.inset-0.z-50,
+  .debug-no-backdrop .absolute.inset-0.z-50 {
+    display: none !important;
+    pointer-events: none !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+  }
+  .debug-no-backdrop::before,
+  .debug-no-backdrop::after {
+    display: none !important;
+  }
+}
