@@ -26,8 +26,8 @@ class Settings(BaseSettings):
 
     # Claude API 配置（中转）
     claude_base_url: str = "https://web.codetab.cc"
-    claude_api_key_opus: str = "sk-e53d95dd63a3a5b2df06969b385f5dd9b2b867c529fbd8af564b1b61867f6862"
-    claude_api_key_sonnet: str = "sk-2894874a0d67de3ecd52679587579165f6a0e9eec55564f87fa3ac292d1ffa6f"
+    claude_api_key_opus: Optional[str] = None
+    claude_api_key_sonnet: Optional[str] = None
     claude_api_key_beaver: Optional[str] = None  # Beaver 专用 API Key
     claude_base_url_beaver: Optional[str] = None  # Beaver 专用 Base URL
     claude_model_beaver: Optional[str] = None  # Beaver 专用模型

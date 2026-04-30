@@ -1,677 +1,433 @@
-# 租房避坑局 - AI 智能租房合同分析系统
+# 租房避坑局
 
-<div align="center">
+> GitHub README 版本：面向开源展示、项目介绍和本地运行指引编写。
 
-**基于多智能体协作的租房合同风险识别与分析平台**
+租房避坑局是一个面向租房合同审查的 AI 应用。它把一份复杂的租房合同拆成“条款风险、法律依据、费用核算、可读报告”四个部分，由多个 Agent 协同完成分析，帮助租客在签约前更快发现押金、水电费、违约责任、自动续约、隐私条款等常见风险。
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com/)
-[![React](https://img.shields.io/badge/React-18+-61DAFB.svg)](https://reactjs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5+-3178C6.svg)](https://www.typescriptlang.org/)
+这个项目不是一个单纯的聊天页面，而是一条完整的合同分析工作流：上传合同后，系统会解析文档内容，按步骤调用不同 Agent，实时展示分析进度，并在结果页中把风险条款、法律参考、费用异常和报告汇总到同一个工作台里。
 
-</div>
+## 核心能力
 
----
+- 多格式合同上传：支持 `PDF`、`DOCX`、`PNG/JPG` 图片和文本类合同内容。
+- 多 Agent 协作：`Owl` 识别条款风险，`Dog` 检索法律依据，`Beaver` 核算费用，`Cat` 汇总报告。
+- RAG 知识检索：通过本地知识文件和 FAISS 向量索引检索租房法律、案例和水电价格信息。
+- 实时分析进度：后端使用任务队列和 SSE，把每个 Agent 的执行状态推送到前端。
+- 结果追问：分析完成后，可以围绕当前合同继续向 `Owl / Dog / Beaver` 追问。
+- 报告导出：支持导出清洁版 HTML 报告和带标注的合同版本。
+- 隐私保护：支持上传后自动脱敏手机号、身份证号、邮箱、银行卡号、主体名称等敏感信息。
+- 阅后即焚：支持在退出登录或主动清理时删除当前用户的临时合同运行态。
+- 用户系统：基于 Supabase 支持登录、合同历史、用户偏好和个性化风险阈值。
 
-## 📋 目录
+## 适用场景
 
-- [系统简介](#系统简介)
-- [核心功能](#核心功能)
-- [技术架构](#技术架构)
-- [快速开始](#快速开始)
-- [配置说明](#配置说明)
-- [Agent 详解](#agent-详解)
-- [API 文档](#api-文档)
-- [开发指南](#开发指南)
-- [常见问题](#常见问题)
+- 租客签约前快速检查合同中可能不公平或不清晰的条款。
+- 对押金、违约金、水电燃气、服务费等费用进行自动核算。
+- 为租客和房东、中介沟通提供结构化的风险说明和协商依据。
+- 作为多 Agent、RAG、文档解析和合同工作流类 AI 应用的参考实现。
 
----
+## 系统架构
 
-## 🎯 系统简介
-
-租房避坑局是一个基于 **多智能体协作** 的 AI 租房合同分析系统，通过 4 个专业 Agent 协同工作，为租房者提供全方位的合同风险识别、法律依据检索、财务分析和报告生成服务。
-
-### 核心优势
-
-- 🤖 **多智能体协作** - 4 个专业 Agent 分工明确，协同分析
-- 📄 **多格式支持** - 支持 PDF、Word、图片等多种合同格式
-- 🔍 **深度分析** - 识别隐藏条款、不合理费用、法律风险
-- ⚖️ **法律支持** - 提供相关法律依据和真实案例参考
-- 💰 **财务计算** - 精确计算押金、租金、水电费合规性
-- 📊 **可视化报告** - 生成详细的 Markdown 格式分析报告
-
----
-
-## ✨ 核心功能
-
-### 1. 风险识别 (Owl Agent)
-- 识别不合理条款（霸王条款、单方面权利）
-- 检测隐藏费用和模糊表述
-- 标注高风险条款和紧急警告
-- 支持长文本分块分析（chunk_size=800）
-
-### 2. 法律检索 (Dog Agent)
-- 检索相关法律法规依据
-- 匹配真实租房纠纷案例
-- 提供谈判建议和话术模板
-- 基于 RAG 的知识库检索
-
-### 3. 财务分析 (Beaver Agent)
-- 押金合规性检查（法定上限 1 个月租金）
-- 水电气费价格对比（官方价格 vs 合同价格）
-- 隐藏费用识别和总成本计算
-- 支持 Word 文档和 PDF 分析
-
-### 4. 报告生成 (Cat Agent)
-- 生成结构化 Markdown 报告
-- 风险等级分类和优先级排序
-- 提供具体的修改建议
-- 支持导出和分享
-
----
-
-## 🏗️ 技术架构
-
-### 系统架构图
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    前端 (React + TypeScript)              │
-│                    http://localhost:3000                 │
-└────────────────────────┬────────────────────────────────┘
-                         │ HTTP/SSE
-┌────────────────────────▼────────────────────────────────┐
-│                 后端 API (FastAPI)                       │
-│                 http://localhost:8001                    │
-└────────────────────────┬────────────────────────────────┘
-                         │
-        ┌────────────────┼────────────────┐
-        │                │                │
-┌───────▼──────┐  ┌──────▼──────┐  ┌─────▼──────┐
-│  Owl Agent   │  │  Dog Agent  │  │ Beaver     │
-│  风险识别     │  │  法律检索    │  │ Agent      │
-│              │  │             │  │ 财务分析    │
-│ Claude Opus  │  │ Claude      │  │            │
-│ 4.6          │  │ Sonnet 4.6  │  │ Qwen-Max   │
-└───────┬──────┘  └──────┬──────┘  └─────┬──────┘
-        │                │                │
-        └────────────────┼────────────────┘
-                         │
-                  ┌──────▼──────┐
-                  │  Cat Agent  │
-                  │  报告生成    │
-                  │             │
-                  │ Claude      │
-                  │ Sonnet 4.6  │
-                  └─────────────┘
+```mermaid
+flowchart LR
+    User[用户上传合同] --> Frontend[React + TypeScript 前端]
+    Frontend --> API[FastAPI 后端]
+    API --> Parser[文档解析与隐私脱敏]
+    Parser --> Queue[分析任务队列]
+    Queue --> Owl[Owl Analyst<br/>条款拆解与风险识别]
+    Owl --> Dog[Dog Retriever<br/>法律依据与案例检索]
+    Dog --> Beaver[Beaver Calculator<br/>押金水电与总成本核算]
+    Beaver --> Cat[Cat Reporter<br/>报告生成]
+    Dog --> Knowledge[FAISS 本地知识库]
+    Cat --> Workspace[结果工作台与 HTML 导出]
+    Workspace --> Chat[Agent 追问]
+    Frontend --> Supabase[Supabase Auth / Preferences]
+    API --> Supabase
 ```
 
-### 技术栈
+## Agent 设计
 
-**后端**:
-- **框架**: FastAPI 0.104+
-- **AI 模型**: 
-  - Claude Opus 4.6 (深度分析)
-  - Claude Sonnet 4.6 (快速处理)
-  - Qwen-Max (财务计算)
-- **文档解析**: PyPDF2, python-docx
-- **向量检索**: FAISS + Qwen Embedding
-- **数据库**: Supabase (可选)
+| Agent | 角色 | 主要输出 |
+| --- | --- | --- |
+| `Owl Analyst` | 条款解析师 | 合同实体、风险条款、风险等级、修改建议 |
+| `Dog Retriever` | 法律检索师 | 法律条文、案例线索、条款适用说明 |
+| `Beaver Calculator` | 费用计算师 | 押金合规性、水电费加价、隐藏费用、年度成本 |
+| `Cat Reporter` | 报告整理师 | Markdown 报告、风险摘要、可读结论 |
 
-**前端**:
-- **框架**: React 18 + TypeScript 5
-- **构建工具**: Vite
-- **UI 组件**: 自定义组件库
-- **状态管理**: React Hooks
+整个分析链路不是把所有问题一次性丢给一个模型，而是把任务拆成更稳定的中间步骤。这样前端可以展示每个 Agent 的进度，后端也能在某一步失败时进行 fallback 或保留已有结果。
 
----
+## 功能流程
 
-## 🚀 快速开始
+```text
+上传合同
+-> 识别文件类型并解析文本
+-> 可选隐私脱敏
+-> 创建分析任务
+-> Owl 提取实体并识别风险
+-> Dog 检索法律与案例依据
+-> Beaver 核算费用与隐藏成本
+-> Cat 生成最终报告
+-> 前端展示合同原文、风险卡片、报告和追问入口
+```
+
+## 技术栈
+
+### 前端
+
+- React 19
+- TypeScript
+- Vite
+- Tailwind CSS 4
+- Supabase JS
+- lucide-react
+- motion
+
+### 后端
+
+- Python 3.10+
+- FastAPI
+- Uvicorn
+- Pydantic / pydantic-settings
+- Supabase Python Client
+
+### AI 与检索
+
+- OpenAI-compatible API client
+- Claude / Qwen / OpenAI 兼容模型配置
+- FAISS
+- sentence-transformers
+- DashScope / OpenAI-compatible Embedding
+
+### 文档处理
+
+- pdfplumber
+- PyPDF2
+- python-docx
+- Pillow
+- PaddleOCR
+- python-magic-bin
+
+## 项目结构
+
+```text
+租房避坑局/
+├─ src/                         # 前端应用
+│  ├─ components/               # 页面组件、工作台、分析进度、用户偏好
+│  ├─ services/                 # API、鉴权、导出、任务状态、错误处理
+│  ├─ types/                    # 前端类型定义
+│  ├─ uploadHelpers.ts          # 上传格式校验
+│  ├─ App.tsx                   # 应用入口
+│  └─ index.css                 # 全局样式
+├─ backend/
+│  ├─ src/
+│  │  ├─ agents/                # Owl / Dog / Beaver / Cat / Agent Chat
+│  │  ├─ database/              # Supabase 客户端封装
+│  │  ├─ knowledge/             # RAG 数据加载、向量化、检索
+│  │  ├─ models/                # Pydantic 数据模型
+│  │  ├─ prompts/               # Agent 提示词
+│  │  ├─ utils/                 # 文档解析、隐私脱敏、LLM 客户端等工具
+│  │  ├─ analysis_queue.py      # 内存任务队列
+│  │  ├─ analysis_queue_worker.py
+│  │  ├─ analysis_runtime.py    # 多 Agent 编排
+│  │  ├─ streaming.py           # SSE 事件封装
+│  │  └─ main.py                # FastAPI 入口
+│  ├─ database/                 # Supabase SQL 脚本
+│  ├─ tests/                    # 后端测试
+│  ├─ requirements.txt
+│  └─ .env.example
+├─ tests/                       # 前端回归脚本
+├─ docs/plans/                  # 设计记录
+├─ .env.example                 # 前端环境变量示例
+├─ start-all.bat                # Windows 本地快速启动脚本
+├─ package.json
+└─ README.md
+```
+
+## 本地运行
 
 ### 环境要求
 
-- **Python**: 3.10+
-- **Node.js**: 18+
-- **操作系统**: Windows / macOS / Linux
+- Node.js 18+
+- npm 9+
+- Python 3.10+
+- 可选：Supabase 项目，用于登录、历史记录和用户偏好
+- 可选：DashScope / OpenAI-compatible Embedding，用于重建本地知识库
 
 ### 1. 克隆项目
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/plutoljy/zufang-bikengju.git
 cd 租房避坑局
 ```
 
-### 2. 后端配置
+### 2. 安装前端依赖
 
 ```bash
-# 进入后端目录
-cd backend
-
-# 创建虚拟环境（推荐）
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件，填入 API Keys
-```
-
-### 3. 前端配置
-
-```bash
-# 返回项目根目录
-cd ..
-
-# 安装依赖
 npm install
-
-# 配置前端环境变量（如需要）
 ```
 
-### 4. 启动服务
-
-**方式一：使用启动脚本（推荐）**
+### 3. 安装后端依赖
 
 ```bash
-# Linux/macOS
-./start.sh
-
-# Windows
-start_frontend.bat
-```
-
-**方式二：手动启动**
-
-```bash
-# 终端 1 - 启动后端
 cd backend
-python -m uvicorn src.main:app --host 0.0.0.0 --port 8001
-
-# 终端 2 - 启动前端
-npm run dev
+pip install -r requirements.txt
+cd ..
 ```
 
-### 5. 访问系统
+### 4. 配置前端环境变量
 
-- **前端**: http://localhost:3000
-- **后端 API**: http://localhost:8001
-- **API 文档**: http://localhost:8001/docs
-
----
-
-## ⚙️ 配置说明
-
-### 后端配置 (backend/.env)
+复制 `.env.example` 为 `.env`，然后填入自己的 Supabase 配置。
 
 ```bash
-# Claude API 配置（中转）
-CLAUDE_BASE_URL=https://web.codetab.cc
-CLAUDE_API_KEY_OPUS=sk-your-opus-key
-CLAUDE_API_KEY_SONNET=sk-your-sonnet-key
-CLAUDE_MODEL_OPUS=claude-opus-4-6
-CLAUDE_MODEL_SONNET=claude-sonnet-4-6
+cp .env.example .env
+```
 
-# 千问 API 配置
-QWEN_API_KEY=sk-your-qwen-key
+示例：
+
+```env
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=your-supabase-publishable-key
+VITE_API_PORT=8000
+```
+
+### 5. 配置后端环境变量
+
+复制 `backend/.env.example` 为 `backend/.env`，然后填入自己的模型、Embedding、Supabase 配置。
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+示例：
+
+```env
+OPENAI_API_KEY=your-openai-api-key
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5.4
+
+QWEN_API_KEY=your-qwen-api-key
 QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode
 QWEN_MODEL=qwen-max
 
-# Embedding 配置
-EMBEDDING_API_KEY=sk-your-embedding-key
+CLAUDE_BASE_URL=https://your-relay.example.com
+CLAUDE_API_KEY_OPUS=your-claude-opus-key
+CLAUDE_MODEL_OPUS=claude-opus-4-6
+CLAUDE_API_KEY_SONNET=your-claude-sonnet-key
+CLAUDE_MODEL_SONNET=claude-sonnet-4-6
+CLAUDE_API_KEY_BEAVER=your-beaver-dedicated-key
+
+EMBEDDING_API_KEY=your-embedding-api-key
 EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 EMBEDDING_MODEL=text-embedding-v1
 
-# Supabase 配置（可选）
-SUPABASE_URL=your-supabase-url
-SUPABASE_KEY=your-supabase-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+JWT_SECRET_KEY=replace-with-a-random-secret
 
-# JWT 配置
-JWT_SECRET_KEY=your-secret-key-change-in-production
-JWT_ALGORITHM=HS256
-JWT_EXPIRE_MINUTES=1440
-
-# 服务配置
-API_HOST=0.0.0.0
-API_PORT=8001
-FRONTEND_URL=http://localhost:3000
-MAX_FILE_SIZE=52428800
-UPLOAD_DIR=data/uploads
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-supabase-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
 ```
 
-### 前端配置 (src/services/apiConfig.ts)
+### 6. 启动后端
 
-```typescript
-const API_PORT = 8001;  // 后端端口
-```
-
----
-
-## 🤖 Agent 详解
-
-### Owl Agent - 风险识别专家
-
-**职责**: 识别合同中的风险条款和不合理内容
-
-**模型**: Claude Opus 4.6 (temperature=0.3)
-
-**核心功能**:
-- 识别霸王条款和单方面权利
-- 检测隐藏费用和模糊表述
-- 标注高风险条款
-- 提供紧急警告
-
-**技术特点**:
-- 支持长文本分块分析 (chunk_size=800)
-- 智能段落分割
-- 多块结果合并
-- 指数退避重试机制 (最多 5 次)
-
-**输出示例**:
-```json
-{
-  "risk_items": [
-    {
-      "issue": "押金超标",
-      "severity": "high",
-      "clause": "押金为两个月租金",
-      "explanation": "法定上限为一个月租金"
-    }
-  ],
-  "hidden_costs": [...],
-  "critical_warnings": [...]
-}
-```
-
----
-
-### Dog Agent - 法律检索专家
-
-**职责**: 检索相关法律依据和案例
-
-**模型**: Claude Sonnet 4.6 (temperature=0.1)
-
-**核心功能**:
-- 检索相关法律法规
-- 匹配真实租房纠纷案例
-- 提供谈判建议和话术
-- 基于 RAG 的知识库检索
-
-**技术特点**:
-- FAISS 向量检索
-- Qwen Embedding (text-embedding-v1)
-- Top-K 相似度匹配 (k=3)
-- 统一 chunk_size=800
-
-**输出示例**:
-```json
-{
-  "legal_references": [
-    {
-      "law_id": "law_1",
-      "title": "民法典第七百零四条",
-      "content": "租赁合同的内容一般包括...",
-      "relevance": "相似度 0.8542"
-    }
-  ],
-  "case_references": [...],
-  "suggestions": [...],
-  "negotiation_tips": [...]
-}
-```
-
----
-
-### Beaver Agent - 财务分析专家
-
-**职责**: 计算费用和检查合规性
-
-**模型**: Qwen-Max (优先) / Claude Opus 4.6 (备用)
-
-**核心功能**:
-- 押金合规性检查
-- 水电气费价格对比
-- 隐藏费用识别
-- 总成本计算
-
-**技术特点**:
-- 支持 Word 和 PDF 文档
-- 长文本分块分析 (chunk_size=800)
-- 自动降级机制（LLM 失败时使用确定性计算）
-- 官方价格数据库（北京、上海、广州、深圳）
-
-**输出示例**:
-```json
-{
-  "deposit_check": {
-    "amount": 7600,
-    "legal_limit": 3800,
-    "compliant": false,
-    "overcharge_amount": 3800,
-    "issue": "押金超标 100%"
-  },
-  "utilities_check": {
-    "water": {
-      "contract_price": 6.0,
-      "official_price": 5.0,
-      "markup": 20.0,
-      "compliant": false
-    }
-  },
-  "hidden_costs": [...],
-  "total_cost_analysis": {...}
-}
-```
-
----
-
-### Cat Agent - 报告生成专家
-
-**职责**: 生成结构化分析报告
-
-**模型**: Claude Sonnet 4.6 (temperature=0.3)
-
-**核心功能**:
-- 生成 Markdown 格式报告
-- 风险等级分类
-- 优先级排序
-- 提供修改建议
-
-**输出示例**:
-```markdown
-# 租房合同分析报告
-
-## 📊 风险概览
-- 总风险数: 15 项
-- 高风险: 5 项
-- 中风险: 7 项
-- 低风险: 3 项
-
-## ⚠️ 高风险条款
-1. **押金超标** (严重)
-   - 问题: 押金为 7600 元，超过法定上限 3800 元
-   - 法律依据: 民法典第七百零四条
-   - 建议: 要求降低至一个月租金
-
-...
-```
-
----
-
-## 📡 API 文档
-
-### 主要接口
-
-#### 1. 上传并分析合同
-
-```http
-POST /api/analyze
-Content-Type: multipart/form-data
-
-Parameters:
-- file: 合同文件 (PDF/Word/图片)
-- location: 城市 (beijing/shanghai/guangzhou/shenzhen)
-```
-
-**响应** (Server-Sent Events):
-```json
-{
-  "event": "agent_started",
-  "data": {
-    "agent": "owl",
-    "step": "risk_analysis",
-    "message": "正在识别风险条款..."
-  }
-}
-
-{
-  "event": "agent_completed",
-  "data": {
-    "agent": "owl",
-    "result": {...}
-  }
-}
-```
-
-#### 2. 获取分析结果
-
-```http
-GET /api/analysis/{session_id}
-```
-
-**响应**:
-```json
-{
-  "session_id": "uuid",
-  "status": "completed",
-  "entities": {...},
-  "risk_items": [...],
-  "legal_references": [...],
-  "calculations": {...},
-  "report": {...}
-}
-```
-
-### 完整 API 文档
-
-访问 http://localhost:8001/docs 查看 Swagger UI 文档
-
----
-
-## 🛠️ 开发指南
-
-### 项目结构
-
-```
-租房避坑局/
-├── backend/                    # 后端代码
-│   ├── src/
-│   │   ├── agents/            # 4 个 Agent 实现
-│   │   │   ├── owl_analyst.py
-│   │   │   ├── dog_retriever.py
-│   │   │   ├── beaver_calculator.py
-│   │   │   └── cat_reporter.py
-│   │   ├── api/               # API 路由
-│   │   ├── knowledge/         # 知识库和向量检索
-│   │   ├── prompts/           # Agent 提示词
-│   │   ├── utils/             # 工具函数
-│   │   ├── config.py          # 配置管理
-│   │   └── main.py            # FastAPI 应用入口
-│   ├── data/                  # 数据目录
-│   │   ├── uploads/           # 上传文件
-│   │   └── knowledge/         # 知识库文件
-│   ├── requirements.txt       # Python 依赖
-│   └── .env                   # 环境变量
-├── src/                       # 前端代码
-│   ├── components/            # React 组件
-│   ├── services/              # API 服务
-│   ├── types/                 # TypeScript 类型
-│   └── App.tsx                # 应用入口
-├── package.json               # Node.js 依赖
-├── tsconfig.json              # TypeScript 配置
-├── vite.config.ts             # Vite 配置
-└── README.md                  # 本文件
-```
-
-### 添加新的 Agent
-
-1. 在 `backend/src/agents/` 创建新的 Agent 文件
-2. 实现 Agent 类和主要方法
-3. 在 `backend/src/prompts/` 添加提示词
-4. 在 `backend/src/graph/rental_analysis_graph.py` 注册 Agent
-5. 更新 API 路由和前端界面
-
-### 调试技巧
-
-**后端调试**:
 ```bash
-# 启用详细日志
 cd backend
-python -m uvicorn src.main:app --host 0.0.0.0 --port 8001 --reload --log-level debug
+python -m uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-**测试单个 Agent**:
-```python
-# 测试 Owl Agent
-cd backend
-python -c "
-import sys
-sys.path.insert(0, 'src')
-from agents.owl_analyst import OwlAnalyst
+访问：
 
-owl = OwlAnalyst()
-result = owl.analyze('合同文本...', 'beijing')
-print(result)
-"
-```
+- API: `http://localhost:8000`
+- Swagger: `http://localhost:8000/docs`
 
-**前端调试**:
+### 7. 启动前端
+
+打开另一个终端，在项目根目录运行：
+
 ```bash
-# 启用开发者工具
 npm run dev
-# 打开浏览器控制台查看网络请求和日志
 ```
 
----
+访问：
 
-## ❓ 常见问题
+- Web App: `http://localhost:3000`
 
-### 1. 后端启动失败
+### 8. Windows 快速启动
 
-**问题**: `ModuleNotFoundError: No module named 'xxx'`
+Windows 环境可直接运行：
 
-**解决**:
+```bat
+start-all.bat
+```
+
+脚本会分别启动后端 `8000` 端口和前端 `3000` 端口。使用前请确认系统命令行能直接访问 `python` 和 `npm`。
+
+## 知识库与向量索引
+
+本项目的 RAG 知识源位于：
+
+```text
+backend/src/knowledge/data/
+```
+
+当前主要包含租房法律、案例和水电价格相关文本。向量索引默认位于：
+
+```text
+backend/src/knowledge/vectorstore/
+```
+
+如果更新了知识文件，可以重新生成索引：
+
 ```bash
 cd backend
-pip install -r requirements.txt
+python -m src.knowledge.vectorize
 ```
 
----
+## 主要 API
 
-### 2. API 调用失败
+### 合同分析
 
-**问题**: `404 Client Error: Not Found`
+- `POST /api/contracts/upload`
+- `GET /api/contracts/{contract_id}/analyze`
+- `POST /api/contracts/{contract_id}/analyze/queue`
+- `GET /api/analysis/tasks/{task_id}`
+- `GET /api/analysis/tasks/{task_id}/stream`
+- `GET /api/contracts/{contract_id}/report`
 
-**可能原因**:
-- API Key 未配置或无效
-- API 地址错误
-- 网络连接问题
+### 工作台
 
-**解决**:
-1. 检查 `backend/.env` 中的 API Key
-2. 确认 API 地址正确
-3. 测试网络连接
+- `GET /api/contracts/history`
+- `POST /api/contracts/{contract_id}/agents/{agent_key}/chat`
+- `POST /api/contracts/burn-after-reading/cleanup`
 
----
+### 用户偏好
 
-### 3. 分析速度慢
+- `GET /api/preferences/{user_id}`
+- `POST /api/preferences/{user_id}`
+- `DELETE /api/preferences/{user_id}`
+- `POST /api/preferences/{user_id}/reset`
 
-**原因**: 
-- 合同文本过长
-- API 响应慢
-- 网络延迟
+## 测试
 
-**优化**:
-- 系统已实现分块分析 (chunk_size=800)
-- 使用指数退避重试机制
-- 考虑使用更快的模型（Sonnet 代替 Opus）
+### 前端类型检查与回归脚本
 
----
-
-### 4. Paddle 初始化慢
-
-**问题**: 启动时显示 "Checking connectivity to the model hosters"
-
-**解决**: 已在代码中设置环境变量跳过检查
-```python
-os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
+```bash
+npm run lint
+npx tsx tests/frontend_regressions.ts
+npx tsx src/services/workspaceState.regression.ts
+npx tsx src/services/analysisProgress.regression.ts
+npx tsx src/services/analysisTaskRegistry.regression.ts
+npx tsx src/services/exportHtml.regression.ts
 ```
 
----
+### 后端测试
 
-### 5. Supabase 404 错误
+```bash
+cd backend
+pytest tests -q
+python test_analysis_runtime_regressions.py
+```
 
-**问题**: 前端显示 "Could not find the table 'public.rental_profiles'"
+## 隐私与安全
 
-**说明**: 这是用户认证功能的错误，不影响核心合同分析功能
+- 仓库只应提交 `.env.example`，不要提交 `.env` 或 `backend/.env`。
+- README 中所有密钥均为占位符，真实密钥只应保存在本地环境变量中。
+- 如果真实密钥曾经进入过 Git 历史，建议立即轮换对应 API Key。
+- 不建议上传真实合同、身份证照片、租客联系方式、付款截图或完整录屏。
+- `SUPABASE_SERVICE_ROLE_KEY` 只允许后端使用，不要暴露到前端变量中。
+- 当前合同分析状态主要保存在后端进程内存中，公开部署前应增加持久化存储、审计日志和限流策略。
 
-**解决**: 
-- 如需用户功能，配置 Supabase
-- 否则可以忽略此错误
+## GitHub 上传前检查
 
----
+在推送前建议运行：
 
-## 📊 性能指标
+```bash
+git status --short
+rg -n --hidden --glob '!node_modules/**' --glob '!.git/**' --glob '!**/__pycache__/**' --glob '!.env' --glob '!backend/.env' -e 'sk-[A-Za-z0-9]{20,}' -e 'AKIA[0-9A-Z]{16}' -e 'eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}'
+rg -F -n --hidden --glob '!node_modules/**' --glob '!.git/**' --glob '!**/__pycache__/**' --glob '!README.md' --glob '!.env' --glob '!backend/.env' -e 'C:\Users\' -e 'D:\'
+```
 
-### Agent 性能
+确认以下项目：
 
-| Agent | 模型 | 平均响应时间 | 成功率 | 准确率 |
-|-------|------|------------|--------|--------|
-| Owl | Claude Opus 4.6 | 8-12s | 95% | 92% |
-| Dog | Claude Sonnet 4.6 | 3-5s | 98% | 88% |
-| Beaver | Qwen-Max | 5-8s | 90% | 95% |
-| Cat | Claude Sonnet 4.6 | 4-6s | 99% | 90% |
+- `README.md` 中没有真实密钥、手机号、邮箱或个人路径。
+- `.env.example` 和 `backend/.env.example` 只保留占位符。
+- `backend/src/config.py` 不包含硬编码真实 key。
+- `.env` 和 `backend/.env` 没有进入暂存区。
+- 示例合同、截图、录屏和测试输出不含真实隐私数据。
+- `start-all.bat` 不包含本机专属 Python 解释器路径。
 
-### 分块分析性能
+## 上传到 GitHub
 
-| chunk_size | 分块数 | 成功率 | 识别效果 |
-|-----------|--------|--------|---------|
-| 1200 | 2块 | 50% | 一般 |
-| **800** | **3块** | **67%** | **最佳** |
-| 700 | 4块 | 25% | 较差 |
-| 600 | 4块 | 75% | 合并错误 |
+### 1. 在 GitHub 创建空仓库
 
----
+在 GitHub 新建仓库，建议先不要勾选自动生成 `README`、`.gitignore` 或 `LICENSE`，避免和本地文件冲突。
 
-## 🔄 更新日志
+### 2. 检查当前仓库状态
 
-### v1.0.0 (2026-04-20)
+```bash
+git status --short
+```
 
-**核心改进**:
-- ✅ 统一所有 Agent 使用直接 requests API 调用
-- ✅ 移除 Anthropic SDK 依赖
-- ✅ 实现分块分析功能 (chunk_size=800)
-- ✅ 添加指数退避重试机制
-- ✅ 支持 Word 文档分析
-- ✅ 修复 Paddle 初始化慢问题
-- ✅ 优化 API 调用稳定性
+当前工作区如果还有其他未确认的删除、测试文件或生成文件，不建议直接使用 `git add .`。先确认哪些文件属于本次准备上传。
 
-**测试结果**:
-- Owl Agent: 识别 20 个风险条款
-- Dog Agent: 4 条法律依据 + 3 个案例
-- Beaver Agent: 押金检查 + 8 项隐藏费用
-- Cat Agent: 完整报告生成
+### 3. 暂存推荐上传的项目文件
 
----
+如果你只想先上传核心项目，可以使用：
 
-## 📝 许可证
+```bash
+git add README.md .gitignore .env.example package.json package-lock.json tsconfig.json vite.config.ts index.html start-all.bat
+git add src backend/src backend/tests backend/database backend/requirements.txt backend/.env.example tests docs
+```
 
-MIT License
+如果你已经确认整个工作区都适合公开，也可以使用：
 
----
+```bash
+git add .
+```
 
-## 🤝 贡献
+### 4. 提交
 
-欢迎提交 Issue 和 Pull Request！
+```bash
+git commit -m "docs: prepare project for GitHub"
+```
 
----
+### 5. 添加远程仓库
 
-## 📧 联系方式
+```bash
+git remote add origin https://github.com/plutoljy/zufang-bikengju.git
+```
 
-如有问题或建议，请通过以下方式联系：
+如果已经添加过远程仓库，改用：
 
-- GitHub Issues: [项目地址]
-- Email: [联系邮箱]
+```bash
+git remote set-url origin https://github.com/plutoljy/zufang-bikengju.git
+```
 
----
+### 6. 推送
 
-<div align="center">
+```bash
+git branch -M main
+git push -u origin main
+```
 
-**租房避坑局** - 让租房更安全，让合同更透明
+## 已知限制
 
-Made with ❤️ by AI Multi-Agent System
+- 当前队列、合同运行态和报告结果主要存储在进程内存中，更适合本地演示和原型验证。
+- OCR 和复杂表格解析依赖文件质量与本地环境，扫描件可能需要人工复核。
+- RAG 检索效果取决于 `backend/src/knowledge/data/` 中的知识覆盖范围。
+- Supabase 登录、历史记录和用户偏好需要额外配置数据库表和 RLS 策略。
+- 本项目不提供正式法律意见，实际签约前仍应结合当地政策与专业法律建议判断。
 
-</div>
+## Roadmap
+
+- 将合同、任务、报告从内存迁移到数据库持久化存储。
+- 增加更完整的部署配置、访问限流和异常监控。
+- 扩充更多城市的租房法规、平台公寓规则和价格数据。
+- 优化 OCR、复杂表格、扫描合同和长合同的解析稳定性。
+- 增加端到端测试和示例演示数据。
+
+## License
+
+如果计划开源，请在仓库中补充 `LICENSE` 文件。常见选择包括 MIT、Apache-2.0 或 GPL-3.0。
+
+## Disclaimer
+
+本项目用于技术研究、产品原型和租房风险辅助分析，不构成正式法律意见。合同签署前，请结合当地政策、合同全文和专业法律建议做最终判断。

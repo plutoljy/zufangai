@@ -155,7 +155,7 @@ Expected: both PASS.
 **Step 1: Restart services**
 
 Run backend:
-`D:\study\environment\pythonenvironment\env\aigc\python.exe -m uvicorn src.main:app --host 0.0.0.0 --port 8003`
+`python -m uvicorn src.main:app --host 0.0.0.0 --port 8003`
 
 Run frontend:
 `npm run dev`

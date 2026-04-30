@@ -1,8 +1,0 @@
-{
-  "name": "租房避坑局",
-  "description": "大学生防坑专属神器，多智能体合同审查助手",
-  "requestFramePermissions": [
-    "geolocation"
-  ],
-  "majorCapabilities": []
-}

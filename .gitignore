@@ -28,6 +28,9 @@ Thumbs.db
 
 # Logs
 *.log
+*.out.log
+*.err.log
+*.pid
 logs/
 
 # Environment
@@ -43,13 +46,22 @@ temp/
 *.tmp
 *.bak
 *.backup
-test_*.py
-test_*.txt
+pytest-cache-files-*/
 
 # Data directories
 data/uploads/
 data/vectorstore/
 data/sessions/
+backend/test_reports/
+
+# Private demo artifacts
+private-contracts/
+demo-recordings/
+测试合同输出/
+*.mp4
+*.mov
+*.avi
+*.mkv
 
 # Temporary documentation
 *_REPORT.md
