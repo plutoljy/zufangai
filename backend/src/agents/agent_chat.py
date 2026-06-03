@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 from config import settings
+from utils.dynamic_llm_client import DynamicLLMClient
 from utils.llm_client import LLMClient
 
 
@@ -27,7 +28,29 @@ AGENT_PROMPTS: dict[str, str] = {
 }
 
 
-def _build_client() -> LLMClient | None:
+def _build_client(
+    user_id: str | None = None, access_token: str | None = None, agent_key: str = "owl"
+) -> LLMClient | None:
+    if user_id and access_token:
+        try:
+            dynamic_client = DynamicLLMClient(access_token=access_token)
+            config = dynamic_client.get_client_config_for_agent(user_id, agent_key)
+            print(
+                f"[AgentChat] {agent_key}: using custom config "
+                f"{config.provider_name}/{config.model_name}"
+            )
+            return LLMClient(
+                api_key=config.api_key,
+                base_url=config.base_url or "",
+                model=config.model_name,
+                api_type=config.api_type,
+                temperature=0.2,
+                timeout=90,
+                agent_name=f"chat_{agent_key}",
+            )
+        except Exception as exc:
+            print(f"[AgentChat] {agent_key}: custom config failed ({exc}), falling back to default")
+
     if settings.claude_api_key_sonnet:
         return LLMClient(
             api_key=settings.claude_api_key_sonnet,
@@ -36,6 +59,7 @@ def _build_client() -> LLMClient | None:
             api_type="claude",
             temperature=0.2,
             timeout=90,
+            agent_name=f"chat_{agent_key}",
         )
     if settings.qwen_api_key:
         return LLMClient(
@@ -45,6 +69,7 @@ def _build_client() -> LLMClient | None:
             api_type="qwen",
             temperature=0.2,
             timeout=90,
+            agent_name=f"chat_{agent_key}",
         )
     return None
 
@@ -102,11 +127,13 @@ def generate_agent_chat_reply(
     report: dict[str, Any],
     messages: list[dict[str, str]],
     question: str,
+    user_id: str | None = None,
+    access_token: str | None = None,
 ) -> str:
     if agent_key not in AGENT_PROMPTS:
         raise ValueError(f"Unsupported agent: {agent_key}")
 
-    client = _build_client()
+    client = _build_client(user_id, access_token, agent_key)
     if client is None:
         return _build_fallback_reply(agent_key, report, question)
 
@@ -129,4 +156,4 @@ def generate_agent_chat_reply(
         f"当前用户问题: {question}"
     )
 
-    return client.call(user_prompt=user_prompt, system_prompt=system_prompt).strip()
+    return client.call_with_prompts(system_prompt=system_prompt, user_prompt=user_prompt).strip()

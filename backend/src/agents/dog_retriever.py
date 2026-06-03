@@ -8,26 +8,24 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 from math import ceil
 from typing import Dict, List
-
-import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import settings
+from ai_provider_manager import ResolvedAgentConfig
 from knowledge.retriever import get_retriever
 from prompts import dog_retriever_prompt
+from utils.agent_config import apply_llm_config
 from utils.json_payload import extract_json_payload
+from utils.llm_client import LLMClient
 
 
 class DogRetriever:
     """Retrieve legal references and case support for identified risks."""
 
-    def __init__(self):
+    def __init__(self, llm_config: ResolvedAgentConfig | None = None):
         # 优先使用 Claude Sonnet API（速度优先）
         if settings.claude_api_key_sonnet:
             self.api_key = settings.claude_api_key_sonnet
@@ -56,14 +54,35 @@ class DogRetriever:
             self.api_type = None
             self.chunk_size = 1000
 
-        try:
-            self.retriever = get_retriever()
-            self.use_rag = True
-            print("[OK] Dog Retriever: knowledge base loaded")
-        except FileNotFoundError:
-            print("[WARN] Dog Retriever: knowledge base missing, using mock data")
-            self.retriever = None
-            self.use_rag = False
+        if llm_config is not None:
+            apply_llm_config(self, llm_config)
+            self.temperature = 0.1
+            self.timeout = 180
+            self.chunk_size = 800 if llm_config.api_type == "claude" else 1000
+            print(
+                f"[OK] Dog Retriever: using user provider "
+                f"{llm_config.provider_name}/{llm_config.model_name}"
+            )
+
+        self._llm: LLMClient | None = None
+
+        self.retriever = get_retriever()
+        self.use_rag = True
+        print("[OK] Dog Retriever: knowledge base loaded")
+
+    @property
+    def llm(self) -> LLMClient | None:
+        if self._llm is None and self.use_llm and self.api_key:
+            self._llm = LLMClient(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                model=self.model,
+                api_type=self.api_type,
+                temperature=self.temperature,
+                timeout=self.timeout,
+                agent_name="dog",
+            )
+        return self._llm
 
     def retrieve(self, risk_items: List[Dict], location: str = "beijing") -> Dict:
         if not risk_items:
@@ -156,7 +175,7 @@ class DogRetriever:
             risk_items=json.dumps(risk_items, ensure_ascii=False, separators=(",", ":")),
         )
 
-        response_text = self._call_llm_api(
+        response_text = self.llm.call_with_prompts(
             system_prompt=dog_retriever_prompt.SYSTEM_PROMPT,
             user_prompt=prompt
         )
@@ -167,87 +186,6 @@ class DogRetriever:
             "legal_references": result.get("legal_references", []),
             "case_references": result.get("case_references", []),
         }
-
-    def _build_llm_payload(self, system_prompt: str, user_prompt: str) -> Dict:
-        if self.api_type == "claude":
-            # 与 Owl/Beaver 对齐：在当前 relay 上单条 user 消息更稳定。
-            combined_prompt = f"{system_prompt}\n\n{user_prompt}"
-            return {
-                "model": self.model,
-                "max_tokens": 4096,
-                "temperature": self.temperature,
-                "messages": [{"role": "user", "content": combined_prompt}],
-            }
-
-        if self.api_type == "qwen":
-            return {
-                "model": self.model,
-                "messages": [
-                    {"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}
-                ],
-                "temperature": self.temperature,
-                "max_tokens": 4096,
-            }
-
-        raise ValueError(f"Unsupported API type: {self.api_type}")
-
-    def _call_llm_api(self, system_prompt: str, user_prompt: str, max_retries: int = 5) -> str:
-        """统一的 LLM API 调用方法，支持 Claude 和千问"""
-        last_error = None
-        for attempt in range(max_retries):
-            try:
-                if self.api_type == "claude":
-                    # Claude API
-                    api_url = f"{self.base_url}/v1/messages"
-                    headers = {
-                        "x-api-key": self.api_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json"
-                    }
-                    payload = self._build_llm_payload(system_prompt, user_prompt)
-                    proxies = {'http': None, 'https': None}
-                    print(f"[Dog Retriever] API URL: {api_url}")
-                    print(f"[Dog Retriever] Payload size: {len(str(payload))} bytes")
-                    response = requests.post(
-                        api_url,
-                        headers=headers,
-                        json=payload,
-                        timeout=self.timeout,
-                        verify=False,
-                        proxies=proxies,
-                    )
-                    response.raise_for_status()
-                    return response.json()["content"][0]["text"]
-
-                elif self.api_type == "qwen":
-                    # 千问 API
-                    api_url = f"{self.base_url}/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-                    payload = self._build_llm_payload(system_prompt, user_prompt)
-                    proxies = {'http': None, 'https': None}
-                    response = requests.post(
-                        api_url,
-                        headers=headers,
-                        json=payload,
-                        timeout=self.timeout,
-                        verify=False,
-                        proxies=proxies,
-                    )
-                    response.raise_for_status()
-                    return response.json()["choices"][0]["message"]["content"]
-
-            except Exception as e:
-                last_error = e
-                print(f"[Dog Retriever] API call attempt {attempt + 1}/{max_retries} failed: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                else:
-                    raise
-
-        raise Exception(f"All API call attempts failed: {last_error}")
 
     def _validate_result(self, result: Dict) -> bool:
         required_keys = ["legal_references", "case_references", "suggestions", "negotiation_tips"]

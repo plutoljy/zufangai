@@ -1,20 +1,26 @@
-"""
-统一的 LLM 客户端，支持 Claude 和千问 API
-"""
+"""Unified LLM client supporting Claude, OpenAI, Qwen, and custom relay protocols."""
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Dict, List, Optional
 
 import requests
 import urllib3
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+from utils.agent_config import (
+    build_anthropic_messages_url,
+    build_chat_completions_url,
+    build_request_payload,
+    build_request_url,
+    extract_request_text,
+)
 
 
 class LLMClient:
-    """统一的 LLM API 客户端"""
+    """Unified LLM API client with protocol abstraction and structured logging."""
 
     def __init__(
         self,
@@ -23,7 +29,8 @@ class LLMClient:
         model: str,
         api_type: str = "claude",
         temperature: float = 0.3,
-        timeout: int = 180
+        timeout: int = 180,
+        agent_name: str = "llm",
     ):
         self.api_key = api_key
         self.base_url = base_url
@@ -31,153 +38,174 @@ class LLMClient:
         self.api_type = api_type
         self.temperature = temperature
         self.timeout = timeout
+        self.agent_name = agent_name
+        self._proxies = {"http": None, "https": None}
 
-    def call(
-        self,
-        user_prompt: str,
-        system_prompt: Optional[str] = None,
-        max_retries: int = 5
-    ) -> str:
-        """调用 LLM API"""
+    def call(self, messages: List[Dict], max_retries: int = 5) -> str:
+        """Call LLM with a messages list. Returns response text."""
+        url = self._resolve_url()
+        headers = self._build_headers()
+        last_error: Exception | None = None
+
         for attempt in range(max_retries):
+            start = time.time()
             try:
-                if self.api_type == "claude":
-                    return self._call_claude(user_prompt, system_prompt)
-                elif self.api_type == "qwen":
-                    return self._call_qwen(user_prompt, system_prompt)
-                else:
-                    raise ValueError(f"Unsupported API type: {self.api_type}")
+                payload = self._build_payload(messages)
+                payload_size = len(str(payload))
 
-            except Exception as e:
-                print(f"[LLM Client] API call attempt {attempt + 1}/{max_retries} failed: {e}")
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=self.timeout,
+                    verify=False,
+                    proxies=self._proxies,
+                )
+                response.raise_for_status()
+                content = self._parse_response(response.json())
+                if not content:
+                    raise ValueError("LLM returned empty content")
+
+                duration = time.time() - start
+                print(
+                    f"[LLM] {self.agent_name} | {self.api_type} | {url} | "
+                    f"{self.model} | {payload_size} bytes | {duration:.1f}s | ok"
+                )
+                return content
+
+            except Exception as exc:
+                last_error = exc
+                duration = time.time() - start
+                print(
+                    f"[LLM] {self.agent_name} | {self.api_type} | {url} | "
+                    f"{self.model} | - | {duration:.1f}s | failed: {exc}"
+                )
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    print(f"[LLM Client] Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                else:
-                    raise Exception(f"All {max_retries} API call attempts failed: {e}")
+                    wait = 2 ** attempt
+                    print(f"[LLM] {self.agent_name}: retry {attempt + 1}/{max_retries} in {wait}s")
+                    time.sleep(wait)
 
-    def _call_claude(self, user_prompt: str, system_prompt: Optional[str] = None) -> str:
-        """调用 Claude API"""
-        api_url = f"{self.base_url}/v1/messages"
-        headers = {
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
-
-        payload = {
-            "model": self.model,
-            "max_tokens": 4096,
-            "temperature": self.temperature,
-            "messages": [{"role": "user", "content": user_prompt}]
-        }
-
-        if system_prompt:
-            payload["system"] = system_prompt
-
-        proxies = {'http': None, 'https': None}
-        response = requests.post(
-            api_url,
-            headers=headers,
-            json=payload,
-            timeout=self.timeout,
-            verify=False,
-            proxies=proxies
+        raise RuntimeError(
+            f"[LLM] {self.agent_name}: 调用失败 "
+            f"(protocol={self.api_type}, endpoint={url}, "
+            f"retried={max_retries}x): {last_error}"
         )
 
-        response.raise_for_status()
-        result = response.json()
-        return result["content"][0]["text"]
+    def call_with_prompts(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_retries: int = 5,
+    ) -> str:
+        """Convenience: build messages from system + user prompt, then call."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        return self.call(messages, max_retries)
 
-    def _call_qwen(self, user_prompt: str, system_prompt: Optional[str] = None) -> str:
-        """调用千问 API"""
-        api_url = f"{self.base_url}/v1/chat/completions"
-        headers = {
+    def _resolve_url(self) -> str:
+        base = self.base_url.rstrip("/")
+        if self.api_type == "claude":
+            return build_anthropic_messages_url(base)
+        if self.api_type == "request":
+            return build_request_url(base)
+        return build_chat_completions_url(base)
+
+    def _build_headers(self) -> Dict[str, str]:
+        if self.api_type == "claude":
+            return {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+        return {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
 
-        messages = []
-        if system_prompt:
-            # 千问可能不支持 system 角色，合并到 user 消息中
-            combined_prompt = f"{system_prompt}\n\n{user_prompt}"
-            messages = [{"role": "user", "content": combined_prompt}]
-        else:
-            messages = [{"role": "user", "content": user_prompt}]
+    def _build_payload(self, messages: List[Dict]) -> Dict:
+        if self.api_type == "claude":
+            return self._claude_payload(messages)
+        if self.api_type == "qwen":
+            return self._qwen_payload(messages)
+        if self.api_type == "request":
+            return build_request_payload(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature,
+                max_tokens=8192,
+            )
+        return self._openai_payload(messages)
 
-        payload = {
+    def _claude_payload(self, messages: List[Dict]) -> Dict:
+        """Claude Messages API: system prompt merged into user message for relay compatibility."""
+        system_text = ""
+        user_parts: List[str] = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_text = msg["content"]
+            else:
+                user_parts.append(msg["content"])
+
+        combined = f"{system_text}\n\n{''.join(user_parts)}" if system_text else "".join(user_parts)
+        return {
+            "model": self.model,
+            "max_tokens": 8192,
+            "temperature": self.temperature,
+            "messages": [{"role": "user", "content": combined}],
+        }
+
+    def _openai_payload(self, messages: List[Dict]) -> Dict:
+        """OpenAI-compatible: pass messages as-is (system as role)."""
+        return {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": 4096
+            "max_tokens": 8192,
         }
 
-        proxies = {'http': None, 'https': None}
-        response = requests.post(
-            api_url,
-            headers=headers,
-            json=payload,
-            timeout=self.timeout,
-            verify=False,
-            proxies=proxies
-        )
-
-        response.raise_for_status()
-        result = response.json()
-        return result["choices"][0]["message"]["content"]
-
-    def call_with_chunks(
-        self,
-        text: str,
-        chunk_size: int,
-        system_prompt: str,
-        chunk_prompt_template: str,
-        max_retries: int = 5
-    ) -> List[Dict]:
-        """分块调用 LLM API"""
-        chunks = self._split_into_chunks(text, chunk_size)
-        print(f"[LLM Client] 文本分为 {len(chunks)} 块")
-
-        all_results = []
-        for i, chunk in enumerate(chunks):
-            print(f"[LLM Client] 处理第 {i+1}/{len(chunks)} 块...")
-            chunk_prompt = chunk_prompt_template.format(chunk=chunk)
-
-            try:
-                response_text = self.call(chunk_prompt, system_prompt, max_retries)
-                # 这里假设返回的是 JSON，需要解析
-                from utils.json_payload import extract_json_payload
-                chunk_result = extract_json_payload(response_text)
-
-                if isinstance(chunk_result, list):
-                    all_results.extend(chunk_result)
-                elif isinstance(chunk_result, dict):
-                    all_results.append(chunk_result)
-
-                print(f"  - 发现 {len(chunk_result) if isinstance(chunk_result, list) else 1} 个结果")
-            except Exception as e:
-                print(f"  - 处理失败: {e}")
-                continue
-
-        return all_results
-
-    def _split_into_chunks(self, text: str, chunk_size: int) -> List[str]:
-        """将文本分块，尽量按段落分割"""
-        paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
-
-        chunks = []
-        current_chunk = ""
-
-        for para in paragraphs:
-            if len(current_chunk) + len(para) < chunk_size:
-                current_chunk += para + "\n"
+    def _qwen_payload(self, messages: List[Dict]) -> Dict:
+        """Qwen: merge system into user message (same as Claude relay pattern)."""
+        system_text = ""
+        user_parts: List[str] = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_text = msg["content"]
             else:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                current_chunk = para + "\n"
+                user_parts.append(msg["content"])
 
-        if current_chunk:
-            chunks.append(current_chunk.strip())
+        combined = f"{system_text}\n\n{''.join(user_parts)}" if system_text else "".join(user_parts)
+        return {
+            "model": self.model,
+            "messages": [{"role": "user", "content": combined}],
+            "temperature": self.temperature,
+            "max_tokens": 8192,
+        }
 
-        return chunks
+    def _parse_response(self, result: Dict) -> str:
+        if self.api_type == "claude":
+            content_list = result.get("content", [])
+            if not content_list:
+                raise ValueError(f"Claude API returned empty content: {result}")
+            return content_list[0].get("text", "")
+
+        if self.api_type == "request":
+            return extract_request_text(result)
+
+        # openai / qwen
+        choices = result.get("choices", [])
+        if not choices:
+            raise ValueError(f"OpenAI-compatible API returned empty choices: {result}")
+        msg = choices[0].get("message", {})
+        content = (
+            msg.get("content", "")
+            or msg.get("reasoning_content", "")
+            or choices[0].get("text", "")
+        )
+        if not content:
+            print(
+                f"[LLM] {self.agent_name}: response has choices but no content, "
+                f"keys={list(choices[0].keys())}"
+            )
+        return content

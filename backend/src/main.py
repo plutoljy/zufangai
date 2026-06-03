@@ -43,6 +43,7 @@ from models.user_preferences import PreferenceUpdate, UserPreferences
 from utils.console_runtime import configure_console_runtime
 from utils.document_parser import FileTypeDetector, get_document_parser
 from utils.privacy_redactor import redact_sensitive_contract_info
+from api.ai_providers import router as ai_providers_router
 
 configure_console_runtime()
 
@@ -51,6 +52,8 @@ app = FastAPI(title="租房避坑局 API", version="1.0.0")
 allowed_origins = sorted(
     {
         settings.frontend_url,
+        "http://0.0.0.0:3000",
+        "http://0.0.0.0:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:5173",
@@ -189,21 +192,33 @@ def _validate_stream_token(task_id: str, stream_token: Optional[str]) -> dict[st
 async def _require_current_user_id(
     request: Request, allow_anonymous: bool = False
 ) -> Optional[str]:
-    authorization = request.headers.get("authorization")
-    if not authorization:
+    token = _extract_bearer_token(request)
+    if not token:
         if allow_anonymous:
             return None
         raise HTTPException(status_code=401, detail="Authentication required")
-
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=401, detail="Invalid authorization header")
 
     user_id = supabase_client.get_user_id_from_access_token(token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired access token")
 
     return user_id
+
+
+def _extract_bearer_token(request: Request) -> Optional[str]:
+    authorization = request.headers.get("authorization")
+    if not authorization:
+        return None
+
+    scheme, _, token = authorization.partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    return token
+
+
+app.state.require_current_user_id = _require_current_user_id
+app.include_router(ai_providers_router)
 
 
 def _ensure_user_scope(path_user_id: str, current_user_id: Optional[str]) -> None:
@@ -509,6 +524,7 @@ async def upload_contract(
     try:
         contract_id = str(uuid.uuid4())
         content = await file.read()
+        access_token = _extract_bearer_token(request)
         authenticated_user_id = await _require_current_user_id(
             request, allow_anonymous=True
         )
@@ -546,6 +562,7 @@ async def upload_contract(
             # Do not trust the form field for identity; bind ownership to the token instead.
             "user_id": authenticated_user_id,
             "owner_id": authenticated_user_id,
+            "auth_access_token": access_token if authenticated_user_id else None,
             "submitted_user_id": user_id,
             "status": "uploaded",
             "created_at": created_at,
@@ -580,6 +597,7 @@ async def analyze_contract(contract_id: str):
                 contract_text=contract["text"],
                 location=contract["location"],
                 user_id=contract.get("user_id"),
+                access_token=contract.get("auth_access_token"),
             ):
                 event_type = event.get("event", "message")
                 event_data = event.get("data", {})
@@ -760,12 +778,15 @@ async def chat_with_agent(
     _touch_report_access(contract_id)
 
     report_payload = _build_report_payload(contract_id)
+    contract = contracts_store.get(contract_id, {})
     reply = generate_agent_chat_reply(
         agent_key=agent_key,
         contract_text=report_payload.get("contract_text", ""),
         report=report_payload,
         messages=[message.model_dump() for message in payload.messages],
         question=payload.question.strip(),
+        user_id=contract.get("user_id"),
+        access_token=contract.get("auth_access_token"),
     )
 
     return AgentChatResponse(

@@ -45,6 +45,7 @@ import {
   type DocumentAnnotation,
   type AgentKey,
 } from './workspaceData';
+import { AIProviderSettings } from './AIProviderSettings';
 
 type WorkspaceResultViewProps = {
   contractId: string | null;
@@ -72,6 +73,9 @@ export default function WorkspaceResultView({
   const [activeNav, setActiveNav] = useState<
     'chat' | 'history' | 'preferences' | 'settings'
   >('chat');
+  const [settingsPanelView, setSettingsPanelView] = useState<'general' | 'ai'>(
+    'general'
+  );
   const [activeAgent, setActiveAgent] = useState<AgentKey>('owl');
   const [viewMode, setViewMode] = useState<ViewMode>('document');
   const [chatInput, setChatInput] = useState('');
@@ -646,6 +650,35 @@ export default function WorkspaceResultView({
           </SimplePanel>
         ) : (
           <SimplePanel title="系统设置">
+            {settingsPanelView === 'ai' ? (
+              <div className="space-y-4">
+                <AIProviderSettings />
+                <button
+                  onClick={() => setSettingsPanelView('general')}
+                  className="w-full py-3 rounded-xl border-4 border-ink font-black text-ink hover:bg-surface-alt transition-colors"
+                >
+                  返回系统设置
+                </button>
+              </div>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setSettingsPanelView('ai')}
+                  className="mb-4 w-full rounded-2xl border-4 border-ink bg-paper p-4 text-left shadow-[4px_4px_0px_var(--color-ink)] hover:-translate-y-0.5 transition-all"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-black text-ink">AI 服务厂商配置</div>
+                      <div className="mt-1 text-xs font-bold text-gray-custom">
+                        按 agent 配置 OpenAI 兼容、Anthropic 兼容或自定义中转。
+                      </div>
+                    </div>
+                    <span className="rounded-xl border-2 border-ink bg-primary px-3 py-2 text-sm font-black text-ink">
+                      配置
+                    </span>
+                  </div>
+                </button>
             <div className="bg-surface border-4 border-ink rounded-2xl p-4 shadow-[4px_4px_0px_var(--color-ink)] space-y-6 text-sm font-bold text-ink">
               <div className="flex items-center justify-between gap-4">
                 <div>
@@ -761,6 +794,8 @@ export default function WorkspaceResultView({
                 </div>
               )}
             </div>
+              </>
+            )}
           </SimplePanel>
         )}
       </section>

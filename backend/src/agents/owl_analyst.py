@@ -14,25 +14,23 @@ import json
 import os
 import re
 import sys
-import time
 from typing import Dict, List, Optional
-
-import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import settings
 from prompts import owl_analyst_prompt_v2 as owl_prompt
 from agents.rule_engine import rule_based_review, merge_llm_and_rule_risks
+from ai_provider_manager import ResolvedAgentConfig
+from utils.agent_config import apply_llm_config
 from utils.json_payload import extract_json_payload
+from utils.llm_client import LLMClient
 
 
 class OwlAnalyst:
     """Extract contract entities and detect risk items."""
 
-    def __init__(self):
+    def __init__(self, llm_config: ResolvedAgentConfig | None = None):
         # 优先使用 Claude API，如果没有则使用千问
         if settings.claude_api_key_opus:
             self.api_key = settings.claude_api_key_opus
@@ -57,6 +55,31 @@ class OwlAnalyst:
             self.api_key = None
             self.use_llm = False
             self.api_type = None
+
+        if llm_config is not None:
+            apply_llm_config(self, llm_config)
+            self.temperature = 0.3
+            self.timeout = 180
+            print(
+                f"[OK] Owl Analyst: using user provider "
+                f"{llm_config.provider_name}/{llm_config.model_name}"
+            )
+
+        self._llm: LLMClient | None = None
+
+    @property
+    def llm(self) -> LLMClient | None:
+        if self._llm is None and self.use_llm and self.api_key:
+            self._llm = LLMClient(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                model=self.model,
+                api_type=self.api_type,
+                temperature=self.temperature,
+                timeout=self.timeout,
+                agent_name="owl",
+            )
+        return self._llm
 
     def analyze(self, contract_text: str) -> Dict:
         """分析合同，提取实体和识别风险"""
@@ -85,7 +108,7 @@ class OwlAnalyst:
             {"role": "user", "content": user_prompt},
         ]
 
-        response_text = self._call_llm_with_retry(messages)
+        response_text = self.llm.call(messages)
         result = extract_json_payload(response_text)
 
         if not isinstance(result, dict):
@@ -141,7 +164,7 @@ class OwlAnalyst:
         messages = [{"role": "user", "content": entity_prompt}]
 
         try:
-            response_text = self._call_llm_with_retry(messages)
+            response_text = self.llm.call(messages)
             entities = extract_json_payload(response_text)
             print(f"[Owl Analyst] 实体提取成功")
         except Exception as e:
@@ -174,7 +197,7 @@ class OwlAnalyst:
 
             try:
                 messages = [{"role": "user", "content": risk_prompt}]
-                response_text = self._call_llm_with_retry(messages)
+                response_text = self.llm.call(messages)
 
                 # 尝试提取 JSON，如果失败则跳过这个分块
                 try:
@@ -353,124 +376,3 @@ class OwlAnalyst:
             if keyword in line:
                 return line.strip()
         return None
-
-    def _call_llm_with_retry(self, messages: List[Dict], max_retries: int = 5) -> str:
-        last_error = None
-
-        for attempt in range(max_retries):
-            try:
-                # 根据 API 类型构建不同的请求
-                if self.api_type == "qwen":
-                    # 千问 API (OpenAI 兼容格式)
-                    # 注意：千问可能不支持 system 角色，将其合并到 user 消息中
-                    api_url = f"{self.base_url}/v1/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-
-                    # 处理单消息或双消息情况
-                    if len(messages) == 1:
-                        # 只有一个消息，直接使用
-                        combined_message = messages[0]['content']
-                    else:
-                        # 有多个消息，合并 system 和 user 消息
-                        combined_message = f"{messages[0]['content']}\n\n{messages[1]['content']}"
-
-                    payload = {
-                        "model": self.model,
-                        "messages": [
-                            {"role": "user", "content": combined_message}
-                        ],
-                        "temperature": self.temperature,
-                        "max_tokens": 4096
-                    }
-                else:
-                    # Claude API
-                    api_url = f"{self.base_url}/v1/messages"
-                    headers = {
-                        "x-api-key": self.api_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json"
-                    }
-
-                    # 处理单消息或双消息情况
-                    if len(messages) == 1:
-                        payload = {
-                            "model": self.model,
-                            "max_tokens": 4096,
-                            "temperature": self.temperature,
-                            "messages": [{"role": "user", "content": messages[0]["content"]}]
-                        }
-                    else:
-                        payload = {
-                            "model": self.model,
-                            "max_tokens": 4096,
-                            "temperature": self.temperature,
-                            "system": messages[0]["content"],
-                            "messages": [{"role": "user", "content": messages[1]["content"]}]
-                        }
-
-                print(f"[DEBUG] API URL: {api_url}")
-                print(f"[DEBUG] API Type: {self.api_type}")
-                print(f"[DEBUG] Payload size: {len(str(payload))} bytes")
-                print(f"[DEBUG] Messages count: {len(messages)}")
-                if messages:
-                    print(f"[DEBUG] First message role: {messages[0].get('role', 'N/A')}")
-                    print(f"[DEBUG] First message content length: {len(messages[0].get('content', ''))} chars")
-
-                # 显式禁用代理
-                proxies = {
-                    'http': None,
-                    'https': None
-                }
-
-                response = requests.post(
-                    api_url,
-                    headers=headers,
-                    json=payload,
-                    timeout=self.timeout,
-                    verify=False,
-                    proxies=proxies
-                )
-
-                # 调试：打印响应状态和内容
-                print(f"[DEBUG] Response status: {response.status_code}")
-                print(f"[DEBUG] Response content-type: {response.headers.get('content-type')}")
-
-                response.raise_for_status()
-                result = response.json()
-
-                # 调试：打印完整响应
-                print(f"[DEBUG] Response JSON: {json.dumps(result, ensure_ascii=False)[:500]}")
-
-                # 根据 API 类型解析响应
-                if self.api_type == "qwen":
-                    choices = result.get("choices", [])
-                    if not choices:
-                        raise ValueError(f"千问 API 返回空 choices: {result}")
-                    content = choices[0].get("message", {}).get("content", "")
-                else:
-                    content_list = result.get("content", [])
-                    if not content_list:
-                        raise ValueError(f"Claude API 返回空 content: {result}")
-                    content = content_list[0].get("text", "")
-
-                if not content:
-                    raise ValueError("LLM returned empty content.")
-
-                print(f"[DEBUG] LLM response length: {len(content)} chars")
-                return content
-            except Exception as exc:
-                last_error = exc
-                print(f"[DEBUG] Error type: {type(exc).__name__}")
-                print(f"[DEBUG] Error message: {str(exc)[:200]}")
-                if attempt == max_retries - 1:
-                    raise Exception(
-                        f"LLM调用失败(已重试{max_retries}次): {exc}"
-                    ) from exc
-                wait_time = 2**attempt
-                print(f"LLM调用失败,重试 {attempt + 1}/{max_retries} (等待{wait_time}秒)...")
-                time.sleep(wait_time)
-
-        raise Exception(f"LLM调用失败: {last_error}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +10,16 @@ from unittest.mock import patch
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+
+fake_retriever_module = types.ModuleType("knowledge.retriever")
+
+
+def _missing_retriever():
+    raise FileNotFoundError("test vectorstore unavailable")
+
+
+fake_retriever_module.get_retriever = _missing_retriever
+sys.modules.setdefault("knowledge.retriever", fake_retriever_module)
 
 import analysis_queue  # noqa: E402
 import analysis_queue_worker  # noqa: E402
@@ -81,5 +92,43 @@ def test_process_next_queued_task_runs_serially():
                 store_result=store_result,
             ) is True
             assert set(results.keys()) == {"contract-1", "contract-2"}
+
+    asyncio.run(scenario())
+
+
+def test_process_next_queued_task_forwards_contract_access_token():
+    async def scenario() -> None:
+        analysis_queue.reset_queue_state()
+        analysis_queue.create_task("contract-1", owner_id="user-1")
+
+        seen_kwargs: dict[str, object] = {}
+        contracts = {
+            "contract-1": {
+                "id": "contract-1",
+                "text": "contract text",
+                "location": "beijing",
+                "user_id": "user-1",
+                "auth_access_token": "request-jwt",
+            }
+        }
+
+        async def fake_events(**kwargs: object):
+            seen_kwargs.update(kwargs)
+            yield {
+                "event": "analysis_complete",
+                "data": {"state": {"report": {"summary": {}}}},
+            }
+
+        with patch.object(
+            analysis_queue_worker,
+            "run_contract_analysis_events",
+            fake_events,
+        ):
+            assert await analysis_queue_worker.process_next_queued_task(
+                load_contract=contracts.get,
+                store_result=lambda *_: None,
+            )
+
+        assert seen_kwargs["access_token"] == "request-jwt"
 
     asyncio.run(scenario())

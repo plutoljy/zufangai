@@ -9,24 +9,22 @@ import json
 import os
 import re
 import sys
-import time
 from typing import Dict, List, Optional
-
-import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import settings
+from ai_provider_manager import ResolvedAgentConfig
 from prompts import beaver_calculator_prompt_v3 as beaver_calculator_prompt
+from utils.agent_config import apply_llm_config
 from utils.json_payload import extract_json_payload
+from utils.llm_client import LLMClient
 
 
 class BeaverCalculator:
     """Compute cost and compliance metrics for the uploaded rental contract."""
 
-    def __init__(self):
+    def __init__(self, llm_config: ResolvedAgentConfig | None = None):
         # 优先使用 Beaver 专用 API Key（避免并发冲突）
         if settings.claude_api_key_beaver:
             self.api_key = settings.claude_api_key_beaver
@@ -70,18 +68,25 @@ class BeaverCalculator:
             self.api_type = None
             self.chunk_size = 800
 
+        if llm_config is not None:
+            apply_llm_config(self, llm_config)
+            self.temperature = 0.3
+            self.timeout = 180
+            self.chunk_size = 800
+            print(
+                f"[OK] Beaver Calculator: using user provider "
+                f"{llm_config.provider_name}/{llm_config.model_name}"
+            )
+
+        self._llm: LLMClient | None = None
+
         self.web_search_enabled = False
 
-        try:
-            from knowledge.retriever import get_retriever
+        from knowledge.retriever import get_retriever
 
-            self.retriever = get_retriever()
-            self.use_rag = True
-            print("[OK] Beaver Calculator: knowledge base loaded")
-        except (FileNotFoundError, ImportError) as exc:
-            print(f"[WARN] Beaver Calculator: knowledge base unavailable ({exc}), using default pricing data")
-            self.retriever = None
-            self.use_rag = False
+        self.retriever = get_retriever()
+        self.use_rag = True
+        print("[OK] Beaver Calculator: knowledge base loaded")
 
         self.official_prices = {
             "beijing": {"water": 5.0, "electricity": 0.5583, "gas": 2.63},
@@ -93,6 +98,20 @@ class BeaverCalculator:
             "deposit_multiplier": 1.0,
             "utility_markup_limit": 1.5,
         }
+
+    @property
+    def llm(self) -> LLMClient | None:
+        if self._llm is None and self.use_llm and self.api_key:
+            self._llm = LLMClient(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                model=self.model,
+                api_type=self.api_type,
+                temperature=self.temperature,
+                timeout=self.timeout,
+                agent_name="beaver",
+            )
+        return self._llm
 
     def analyze_from_text(self, contract_text: str, location: str = "beijing") -> Dict:
         """
@@ -169,7 +188,7 @@ class BeaverCalculator:
             official_gas=official["gas"]
         )
 
-        response_text = self._call_llm_with_retry(self._build_llm_messages(prompt))
+        response_text = self.llm.call(self._build_llm_messages(prompt))
 
         result = extract_json_payload(response_text)
         if not self._validate_result(result):
@@ -445,7 +464,7 @@ class BeaverCalculator:
         )
 
         # 使用统一的 API 调用方法
-        response_text = self._call_llm_with_retry(self._build_llm_messages(prompt))
+        response_text = self.llm.call(self._build_llm_messages(prompt))
 
         result = extract_json_payload(response_text)
         if not self._validate_result(result):
@@ -942,144 +961,3 @@ class BeaverCalculator:
             "hidden_costs": hidden_costs or [],
             "ambiguous_clauses": ambiguous_clauses or {"count": 0, "items": []},
         }
-
-    def _call_llm_with_retry(self, messages: List[Dict], max_retries: int = 5) -> str:
-        """统一的 LLM API 调用方法，支持 Claude、千问和 OpenAI 兼容 API"""
-        last_error = None
-
-        for attempt in range(max_retries):
-            try:
-                if self.api_type == "openai":
-                    # OpenAI 兼容 API（如 Codex 中转的 GPT-5.4）
-                    api_url = f"{self.base_url}/v1/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-
-                    # 处理单消息或双消息情况
-                    if len(messages) == 1:
-                        openai_messages = [
-                            {"role": "user", "content": messages[0]["content"]}
-                        ]
-                    else:
-                        openai_messages = [
-                            {"role": "system", "content": messages[0]["content"]},
-                            {"role": "user", "content": messages[1]["content"]}
-                        ]
-
-                    payload = {
-                        "model": self.model,
-                        "messages": openai_messages,
-                        "temperature": self.temperature,
-                        "max_tokens": 4096
-                    }
-
-                    # 禁用代理
-                    proxies = {'http': None, 'https': None}
-
-                    response = requests.post(
-                        api_url,
-                        headers=headers,
-                        json=payload,
-                        timeout=self.timeout,
-                        verify=False,
-                        proxies=proxies
-                    )
-
-                    response.raise_for_status()
-                    result = response.json()
-                    return result["choices"][0]["message"]["content"]
-
-                elif self.api_type == "claude":
-                    # Claude API
-                    api_url = f"{self.base_url}/v1/messages"
-                    headers = {
-                        "x-api-key": self.api_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json"
-                    }
-
-                    # 处理单消息或双消息情况
-                    if len(messages) == 1:
-                        payload = {
-                            "model": self.model,
-                            "max_tokens": 4096,
-                            "temperature": self.temperature,
-                            "messages": [{"role": "user", "content": messages[0]["content"]}]
-                        }
-                    else:
-                        payload = {
-                            "model": self.model,
-                            "max_tokens": 4096,
-                            "temperature": self.temperature,
-                            "system": messages[0]["content"],
-                            "messages": [{"role": "user", "content": messages[1]["content"]}]
-                        }
-
-                    # 禁用代理
-                    proxies = {'http': None, 'https': None}
-
-                    response = requests.post(
-                        api_url,
-                        headers=headers,
-                        json=payload,
-                        timeout=self.timeout,
-                        verify=False,
-                        proxies=proxies
-                    )
-
-                    response.raise_for_status()
-                    result = response.json()
-                    return result["content"][0]["text"]
-
-                elif self.api_type == "qwen":
-                    # 千问 API
-                    api_url = f"{self.base_url}/chat/completions"
-                    headers = {
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    }
-
-                    # 处理单消息或双消息情况
-                    if len(messages) == 1:
-                        qwen_messages = [
-                            {"role": "user", "content": messages[0]["content"]}
-                        ]
-                    else:
-                        qwen_messages = [
-                            {"role": "system", "content": messages[0]["content"]},
-                            {"role": "user", "content": messages[1]["content"]}
-                        ]
-
-                    payload = {
-                        "model": self.model,
-                        "messages": qwen_messages,
-                        "temperature": self.temperature
-                    }
-
-                    # 禁用代理
-                    proxies = {'http': None, 'https': None}
-
-                    response = requests.post(
-                        api_url,
-                        headers=headers,
-                        json=payload,
-                        timeout=self.timeout,
-                        verify=False,
-                        proxies=proxies
-                    )
-
-                    response.raise_for_status()
-                    result = response.json()
-                    return result["choices"][0]["message"]["content"]
-
-            except Exception as e:
-                last_error = e
-                print(f"[Beaver Calculator] API call attempt {attempt + 1}/{max_retries} failed: {e}")
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    print(f"[Beaver Calculator] Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-
-        raise Exception(f"All {max_retries} API call attempts failed: {last_error}")

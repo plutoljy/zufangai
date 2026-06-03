@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     supabase_url: Optional[str] = None
     supabase_key: Optional[str] = None
     supabase_service_role_key: Optional[str] = None
+    ai_provider_encryption_key: Optional[str] = None
 
     model_config = ConfigDict(
         env_file=os.path.join(os.path.dirname(__file__), "..", ".env"),
@@ -83,6 +84,16 @@ def validate_config(settings: Settings) -> None:
     ):
       warnings.append(
           "[INFO] Supabase credentials are not configured; user preferences will be disabled."
+      )
+
+    if settings.supabase_url and settings.supabase_key and not settings.supabase_service_role_key:
+      warnings.append(
+          "[WARN] SUPABASE_SERVICE_ROLE_KEY is not configured; backend AI provider settings may be blocked by RLS in production."
+      )
+
+    if not settings.ai_provider_encryption_key:
+      warnings.append(
+          "[WARN] AI_PROVIDER_ENCRYPTION_KEY is not configured; saved AI provider keys will be encrypted with a derived fallback key."
       )
 
     env_path = os.path.join(os.path.dirname(__file__), "..", ".env")

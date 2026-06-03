@@ -54,6 +54,7 @@ async def process_next_queued_task(
             contract_text=contract["text"],
             location=contract["location"],
             user_id=contract.get("user_id"),
+            access_token=contract.get("auth_access_token"),
         ):
             event_type = event.get("event", "message")
             event_data = event.get("data", {})

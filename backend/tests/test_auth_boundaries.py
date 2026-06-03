@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,16 @@ from fastapi.testclient import TestClient
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+
+fake_retriever_module = types.ModuleType("knowledge.retriever")
+
+
+def _missing_retriever():
+    raise FileNotFoundError("test vectorstore unavailable")
+
+
+fake_retriever_module.get_retriever = _missing_retriever
+sys.modules.setdefault("knowledge.retriever", fake_retriever_module)
 
 import main  # noqa: E402
 import analysis_queue  # noqa: E402
@@ -160,6 +171,20 @@ def test_task_status_rejects_different_authenticated_user(client: TestClient):
     )
 
     assert response.status_code == 403
+
+
+def test_authenticated_upload_keeps_access_token_for_background_analysis(
+    client: TestClient,
+):
+    response = client.post(
+        "/api/contracts/upload",
+        headers={"Authorization": "Bearer request-jwt"},
+        files={"file": ("contract.txt", b"rent contract", "text/plain")},
+    )
+
+    assert response.status_code == 200
+    contract_id = response.json()["contract_id"]
+    assert main.contracts_store[contract_id]["auth_access_token"] == "request-jwt"
 
 
 def test_stream_requires_valid_task_bound_token(client: TestClient):

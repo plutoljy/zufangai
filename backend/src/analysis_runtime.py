@@ -15,13 +15,9 @@ from agents.dog_retriever import DogRetriever
 from agents.owl_analyst import OwlAnalyst
 from prompts import dog_retriever_prompt
 from streaming import stream_agent_step
+from utils.dynamic_llm_client import DynamicLLMClient
 
 # 全局默认实例（用于向后兼容）
-owl = OwlAnalyst()
-dog = DogRetriever()
-beaver = BeaverCalculator()
-cat = CatReporter()
-
 # These are soft thresholds used for progress messaging only.
 # We no longer fail the analysis just because a step takes longer than expected.
 AGENT_TIMEOUTS = {
@@ -33,6 +29,45 @@ AGENT_TIMEOUTS = {
     "cat": 30.0,
 }
 HEARTBEAT_INTERVAL_S = 5.0
+
+
+def _build_agent_instances(
+    user_id: Optional[str], access_token: Optional[str] = None
+) -> dict[str, Any]:
+    if not user_id:
+        print("[Analysis] user_id=None, using DEFAULT agent configs from .env")
+        return {
+            "owl": OwlAnalyst(),
+            "dog": DogRetriever(),
+            "beaver": BeaverCalculator(),
+            "cat": CatReporter(),
+        }
+
+    print(f"[Analysis] user_id={user_id[:8]}..., resolving CUSTOM agent configs")
+    dynamic_client = DynamicLLMClient(access_token=access_token)
+    agents = {}
+    for name in ("owl", "dog", "beaver", "cat"):
+        try:
+            config = dynamic_client.get_client_config_for_agent(user_id, name)
+            print(f"[Analysis] {name}: custom config resolved — {config.provider_name}/{config.model_name}")
+        except Exception as exc:
+            print(f"[Analysis] {name}: custom config FAILED — {exc}")
+            raise
+        agent_cls = {"owl": OwlAnalyst, "dog": DogRetriever, "beaver": BeaverCalculator, "cat": CatReporter}[name]
+        agents[name] = agent_cls(config)
+    return agents
+
+
+def _agents(state: dict[str, Any]) -> dict[str, Any]:
+    return state.get("_agents") or _build_agent_instances(None)
+
+
+def _format_agent_startup_error(exc: Exception) -> str:
+    return (
+        "Analysis runtime failed to start. "
+        "Please check AI provider settings, RAG vectorstore files, and backend "
+        f"runtime configuration. Details: {exc}"
+    )
 
 
 def _log_risk_snapshot(label: str, state: dict[str, Any]) -> None:
@@ -80,7 +115,7 @@ async def _run_step(
 
 
 def _owl_step(state: dict[str, Any]) -> dict[str, Any]:
-    owl_instance = owl
+    owl_instance = _agents(state)["owl"]
 
     result = owl_instance.analyze(state["contract_text"])
     return {
@@ -94,7 +129,7 @@ def _owl_step(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _owl_fallback_step(state: dict[str, Any]) -> dict[str, Any]:
-    owl_instance = owl
+    owl_instance = _agents(state)["owl"]
 
     result = owl_instance._build_fallback_result(state["contract_text"])
     return {
@@ -109,7 +144,8 @@ def _owl_fallback_step(state: dict[str, Any]) -> dict[str, Any]:
 
 def _dog_retrieve_step(state: dict[str, Any]) -> dict[str, Any]:
     try:
-        legal_docs, cases = dog.retrieve_sources(
+        dog_instance = _agents(state)["dog"]
+        legal_docs, cases = dog_instance.retrieve_sources(
             state.get("risk_items", []),
             state.get("location", "beijing"),
         )
@@ -124,14 +160,16 @@ def _dog_format_step(state: dict[str, Any]) -> dict[str, Any]:
     legal_docs = state.get("_dog_legal_docs", [])
     cases = state.get("_dog_cases", [])
     try:
-        formatted = dog.format_results(
+        dog_instance = _agents(state)["dog"]
+        formatted = dog_instance.format_results(
             state.get("risk_items", []),
             legal_docs,
             cases,
         )
     except Exception as exc:
         print(f"Dog Retriever format_results failed: {exc}")
-        formatted = dog._build_fallback_result(legal_docs, cases)
+        dog_instance = _agents(state)["dog"]
+        formatted = dog_instance._build_fallback_result(legal_docs, cases)
     return {
         **state,
         "legal_references": formatted.get("legal_references", []),
@@ -144,7 +182,8 @@ def _dog_format_step(state: dict[str, Any]) -> dict[str, Any]:
 def _dog_format_fallback_step(state: dict[str, Any]) -> dict[str, Any]:
     legal_docs = state.get("_dog_legal_docs", [])
     cases = state.get("_dog_cases", [])
-    formatted = dog._build_fallback_result(legal_docs, cases)
+    dog_instance = _agents(state)["dog"]
+    formatted = dog_instance._build_fallback_result(legal_docs, cases)
     return {
         **state,
         "legal_references": formatted.get("legal_references", []),
@@ -158,9 +197,10 @@ def _beaver_deterministic_step(state: dict[str, Any]) -> dict[str, Any]:
     print(
         "[Beaver Calculator] starting deterministic calculation "
         f"(contract_text_len={len(state.get('contract_text', ''))}, "
-        f"use_llm={beaver.use_llm})"
+        f"use_llm={_agents(state)['beaver'].use_llm})"
     )
-    calculations = beaver.calculate_deterministic(
+    beaver_instance = _agents(state)["beaver"]
+    calculations = beaver_instance.calculate_deterministic(
         state.get("entities", {}),
         state.get("location", "beijing"),
         contract_text=state.get("contract_text"),
@@ -177,7 +217,8 @@ def _beaver_deterministic_step(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _beaver_refine_step(state: dict[str, Any]) -> dict[str, Any]:
-    if not beaver.use_llm:
+    beaver_instance = _agents(state)["beaver"]
+    if not beaver_instance.use_llm:
         print("[Beaver Calculator] skipping LLM refinement because use_llm=False")
         calculations = dict(state.get("calculations", {}))
         calculations.setdefault("analysis_metadata", {})
@@ -200,7 +241,7 @@ def _beaver_refine_step(state: dict[str, Any]) -> dict[str, Any]:
                 "[Beaver Calculator] starting full-text LLM analysis "
                 f"(contract_text_len={len(contract_text)})"
             )
-            calculations = beaver.analyze_from_text(contract_text, location)
+            calculations = beaver_instance.analyze_from_text(contract_text, location)
             calculations.setdefault("analysis_metadata", {})
             calculations["analysis_metadata"].update(
                 {
@@ -222,7 +263,7 @@ def _beaver_refine_step(state: dict[str, Any]) -> dict[str, Any]:
             "[Beaver Calculator] starting LLM refinement "
             f"(contract_text_len={len(contract_text)})"
         )
-        calculations = beaver.refine_with_llm(
+        calculations = beaver_instance.refine_with_llm(
             state.get("entities", {}),
             location,
             state.get("calculations", {}),
@@ -258,7 +299,8 @@ def _beaver_refine_fallback_step(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _cat_step(state: dict[str, Any]) -> dict[str, Any]:
-    report = cat.generate_report(
+    cat_instance = _agents(state)["cat"]
+    report = cat_instance.generate_report(
         entities=state.get("entities", {}),
         risk_items=state.get("risk_items", []),
         legal_references=state.get("legal_references", []),
@@ -275,14 +317,25 @@ async def run_contract_analysis_events(
     contract_text: str,
     location: str,
     user_id: Optional[str] = None,
+    access_token: Optional[str] = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     yield {"event": "analysis_started", "data": {}}
     await asyncio.sleep(0.05)
+
+    try:
+        agent_instances = _build_agent_instances(user_id, access_token)
+    except Exception as exc:
+        yield {
+            "event": "error",
+            "data": {"message": _format_agent_startup_error(exc)},
+        }
+        return
 
     state: dict[str, Any] = {
         "contract_text": contract_text,
         "location": location,
         "user_id": user_id,  # 添加 user_id 到 state
+        "_agents": agent_instances,
     }
 
     async for envelope in _run_step(
@@ -458,5 +511,10 @@ async def run_contract_analysis_events(
 
     yield {
         "event": "analysis_complete",
-        "data": {"contract_id": contract_id, "state": copy.deepcopy(state)},
+        "data": {
+            "contract_id": contract_id,
+            "state": copy.deepcopy(
+                {key: value for key, value in state.items() if key != "_agents"}
+            ),
+        },
     }

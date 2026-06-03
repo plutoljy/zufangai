@@ -8,18 +8,16 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 from math import ceil
 from typing import Dict, List
-
-import requests
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import settings
+from ai_provider_manager import ResolvedAgentConfig
 from prompts import cat_reporter_prompt
+from utils.agent_config import apply_llm_config
+from utils.llm_client import LLMClient
 
 
 def split_report_paragraphs(markdown: str) -> list[str]:
@@ -50,7 +48,7 @@ def split_report_paragraphs(markdown: str) -> list[str]:
 class CatReporter:
     """Generate final contract analysis reports."""
 
-    def __init__(self):
+    def __init__(self, llm_config: ResolvedAgentConfig | None = None):
         # 优先使用 Claude Sonnet API（速度优先，报告生成）
         if settings.claude_api_key_sonnet:
             self.api_key = settings.claude_api_key_sonnet
@@ -75,6 +73,31 @@ class CatReporter:
             self.api_key = None
             self.use_llm = False
             self.api_type = None
+
+        if llm_config is not None:
+            apply_llm_config(self, llm_config)
+            self.temperature = 0.3
+            self.timeout = 180
+            print(
+                f"[OK] Cat Reporter: using user provider "
+                f"{llm_config.provider_name}/{llm_config.model_name}"
+            )
+
+        self._llm: LLMClient | None = None
+
+    @property
+    def llm(self) -> LLMClient | None:
+        if self._llm is None and self.use_llm and self.api_key:
+            self._llm = LLMClient(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                model=self.model,
+                api_type=self.api_type,
+                temperature=self.temperature,
+                timeout=self.timeout,
+                agent_name="cat",
+            )
+        return self._llm
 
     def generate_report(
         self,
@@ -113,7 +136,7 @@ class CatReporter:
 
         try:
             # 使用统一的 API 调用方法
-            response_text = self._call_llm_with_retry(self._build_llm_messages(prompt))
+            response_text = self.llm.call(self._build_llm_messages(prompt))
 
             report_markdown = response_text
             summary = self._generate_summary(risk_items, calculations)
@@ -512,52 +535,3 @@ class CatReporter:
             "count": len(items),
             "highlights": highlights,
         }
-
-    def _call_llm_with_retry(self, messages: List[Dict], max_retries: int = 5) -> str:
-        """统一的 LLM API 调用方法，支持重试"""
-        last_error = None
-
-        for attempt in range(max_retries):
-            try:
-                # Claude API
-                api_url = f"{self.base_url}/v1/messages"
-                headers = {
-                    "x-api-key": self.api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json"
-                }
-
-                payload = {
-                    "model": self.model,
-                    "max_tokens": 4096,
-                    "temperature": self.temperature,
-                    "messages": [{"role": "user", "content": messages[0]["content"]}],
-                }
-
-                # 禁用代理
-                proxies = {'http': None, 'https': None}
-                print(f"[Cat Reporter] API URL: {api_url}")
-                print(f"[Cat Reporter] Payload size: {len(str(payload))} bytes")
-
-                response = requests.post(
-                    api_url,
-                    headers=headers,
-                    json=payload,
-                    timeout=self.timeout,
-                    verify=False,
-                    proxies=proxies
-                )
-
-                response.raise_for_status()
-                result = response.json()
-                return result["content"][0]["text"]
-
-            except Exception as e:
-                last_error = e
-                print(f"[Cat Reporter] API call attempt {attempt + 1}/{max_retries} failed: {e}")
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    print(f"[Cat Reporter] Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-
-        raise Exception(f"All {max_retries} API call attempts failed: {last_error}")

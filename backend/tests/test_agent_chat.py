@@ -93,12 +93,23 @@ def test_agent_chat_returns_reply_for_contract_owner(
         },
     }
 
-    def fake_chat(*, agent_key: str, contract_text: str, report: dict, messages: list[dict], question: str) -> str:
+    def fake_chat(
+        *,
+        agent_key: str,
+        contract_text: str,
+        report: dict,
+        messages: list[dict],
+        question: str,
+        user_id: str | None = None,
+        access_token: str | None = None,
+    ) -> str:
         assert agent_key == "beaver"
         assert "水费 6 元/吨" in contract_text
         assert report["risk_items"][0]["issue"] == "水费过高"
         assert messages == [{"role": "user", "content": "这条怎么算的？"}]
         assert question == "如果房东坚持不改怎么办？"
+        assert user_id == "user-1"
+        assert access_token is None
         return "这是 Beaver 的追问回复"
 
     monkeypatch.setattr(main, "generate_agent_chat_reply", fake_chat)
