@@ -14,6 +14,8 @@ import type { UploadFormat, UploadTargetFormat } from './uploadHelpers';
 import WorkspaceResultView from './components/WorkspaceResultView';
 import LiveAnalysisStage from './components/LiveAnalysisStage';
 import { UserPreferencesSettings } from './components/UserPreferencesSettings';
+import { ServiceHub } from './components/ServiceHub';
+import { RoommateContainer } from './components/roommate/RoommateContainer';
 import { shouldRenderGlobalModal } from './utils/globalModalVisibility';
 import {
   getCurrentSession,
@@ -1567,13 +1569,14 @@ const WorkspaceView = ({ onLogout, location, onNewChat, settings, setSettings, u
 };
 
 export default function App() {
-  const [view, setView] = useState<'login' | 'upload' | 'analyzing' | 'workspace'>('login');
+  const [view, setView] = useState<'login' | 'service-hub' | 'upload' | 'analyzing' | 'workspace' | 'roommate'>('login');
   const [contractId, setContractId] = useState<string | null>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [analysisReport, setAnalysisReport] = useState<AnalysisReport | null>(null);
   const [location, setLocation] = useState<string | null>(null);
   const [showPreferencesModal, setShowPreferencesModal] = useState(false);
   const [showSystemSettingsModal, setShowSystemSettingsModal] = useState(false);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [authSession, setAuthSession] = useState<Session | null>(null);
   const [authUser, setAuthUser] = useState<SupabaseUser | null>(null);
   const [authProfile, setAuthProfile] = useState<RentalProfile | null>(null);
@@ -1594,11 +1597,14 @@ export default function App() {
     const syncAuthState = async (session: Session | null) => {
       if (!active) return;
 
+      console.log('[syncAuthState] 同步认证状态，session:', session ? '存在' : '不存在', 'isAuthenticating:', isAuthenticating);
+
       setAuthSession(session);
       setAuthUser(session?.user ?? null);
 
       if (!session?.user) {
         setAuthProfile(null);
+        console.log('[syncAuthState] 无session，设置视图为login');
         setView('login');
         return;
       }
@@ -1612,7 +1618,16 @@ export default function App() {
         console.error('Failed to load rental profile:', error);
       }
 
-      setView((prev) => (prev === 'login' ? 'upload' : prev));
+      // 只在非认证过程中自动切换视图
+      if (!isAuthenticating) {
+        console.log('[syncAuthState] 非认证过程，检查视图切换');
+        setView((prev) => {
+          console.log('[syncAuthState] 当前视图:', prev, '是否切换:', prev === 'login');
+          return prev === 'login' ? 'service-hub' : prev;
+        });
+      } else {
+        console.log('[syncAuthState] 认证过程中，跳过视图切换');
+      }
     };
 
     getCurrentSession()
@@ -1672,6 +1687,9 @@ export default function App() {
     password: string;
     username?: string;
   }) => {
+    console.log('[handleAuthenticate] 开始认证，模式:', mode);
+    setIsAuthenticating(true);
+
     const result =
       mode === 'login'
         ? await loginWithPassword({ email, password })
@@ -1681,10 +1699,18 @@ export default function App() {
             username: username ?? '',
           });
 
+    console.log('[handleAuthenticate] 认证成功，设置状态');
     setAuthSession(result.session);
     setAuthUser(result.user);
     setAuthProfile(result.profile);
-    setView('upload');
+
+    // 注册后跳转到服务中心，登录后跳转到上传页面
+    const targetView = mode === 'register' ? 'service-hub' : 'upload';
+    console.log('[handleAuthenticate] 设置视图为:', targetView);
+    setView(targetView);
+
+    setIsAuthenticating(false);
+    console.log('[handleAuthenticate] 认证流程完成');
   };
 
   const handleReturnToUpload = () => {
@@ -1729,25 +1755,37 @@ export default function App() {
     setView('login');
   };
 
+  const handleSelectService = (service: 'contract' | 'roommate') => {
+    if (service === 'contract') {
+      setView('upload');
+    } else {
+      setView('roommate');
+    }
+  };
+
+  const handleReturnToServiceHub = () => {
+    setView('service-hub');
+  };
+
   return (
     <div className={`flex flex-col bg-paper text-ink font-sans selection:bg-secondary selection:text-[#2D3142] ${settings.theme === 'dark' ? 'dark' : ''} ${view === 'workspace' ? 'h-screen overflow-hidden' : 'min-h-screen overflow-y-auto'} ${view === 'login' ? 'debug-no-backdrop' : ''}`}>
       {/* Global Header (Only show outside of workspace) */}
       {view !== 'workspace' && (
         <header className="flex flex-col sm:flex-row justify-between items-center border-b-4 border-ink pb-4 mb-8 shrink-0 gap-4 bg-surface p-4 mx-4 sm:mx-8 mt-4 sm:mt-8 rounded-2xl shadow-[4px_4px_0px_var(--color-ink)]">
-          <div 
+          <div
             className="text-2xl font-black flex items-center gap-2 text-ink cursor-pointer hover:scale-105 transition-transform"
-            onClick={() => (view === 'login' ? setView('login') : handleReturnToUpload())}
+            onClick={() => (view === 'login' ? setView('login') : handleReturnToServiceHub())}
           >
             <div className="bg-secondary p-2 rounded-xl border-2 border-ink transform -rotate-6">🏠</div>
             租房避坑局
           </div>
           <div className="flex items-center gap-4">
-            {view !== 'login' && view !== 'upload' && (
-              <button 
-                onClick={handleReturnToUpload}
+            {view !== 'login' && view !== 'service-hub' && (
+              <button
+                onClick={handleReturnToServiceHub}
                 className="hidden sm:flex items-center gap-2 px-4 py-2 bg-surface border-2 border-ink rounded-xl font-black text-sm shadow-[2px_2px_0px_var(--color-ink)] hover:-translate-y-0.5 hover:shadow-[4px_4px_0px_var(--color-ink)] active:translate-y-0.5 active:shadow-none transition-all"
               >
-                🏠 返回首页
+                🏠 返回服务中心
               </button>
             )}
             <div className="text-sm font-bold text-gray-custom hidden sm:block text-right bg-paper px-4 py-2 rounded-xl border-2 border-ink/20">
@@ -1784,6 +1822,9 @@ export default function App() {
       {view === 'login' && (
         <LoginView onAuthenticate={handleAuthenticate} theme={settings.theme} />
       )}
+      {view === 'service-hub' && (
+        <ServiceHub onSelectService={handleSelectService} />
+      )}
       {view === 'upload' && (
         <FileUploadView
           onUploadComplete={handleUploadComplete}
@@ -1792,6 +1833,9 @@ export default function App() {
           privacyRedaction={settings.privacyRedaction}
           burnAfterReading={settings.burnAfterReading}
         />
+      )}
+      {view === 'roommate' && (
+        <RoommateContainer onBack={handleReturnToServiceHub} />
       )}
       {view === 'analyzing' && (
         <LiveAnalysisStage
@@ -1850,8 +1894,8 @@ export default function App() {
                 </h3>
                 <button onClick={() => setShowSystemSettingsModal(false)} className="text-gray-custom hover:text-ink font-black text-xl">&times;</button>
               </div>
-
               <div className="space-y-6">
+
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <div className="font-black text-ink">隐私消除</div>

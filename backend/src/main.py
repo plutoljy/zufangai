@@ -44,6 +44,7 @@ from utils.console_runtime import configure_console_runtime
 from utils.document_parser import FileTypeDetector, get_document_parser
 from utils.privacy_redactor import redact_sensitive_contract_info
 from api.ai_providers import router as ai_providers_router
+from api.roommate_api import router as roommate_router
 
 configure_console_runtime()
 
@@ -219,6 +220,7 @@ def _extract_bearer_token(request: Request) -> Optional[str]:
 
 app.state.require_current_user_id = _require_current_user_id
 app.include_router(ai_providers_router)
+app.include_router(roommate_router)
 
 
 def _ensure_user_scope(path_user_id: str, current_user_id: Optional[str]) -> None:
